@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# RISC-V IOMMU support
+
+config RISCV_IOMMU
+	bool "RISC-V IOMMU driver"
+	depends on RISCV
+	select IOMMU_API
+	select IOMMU_DMA
+	select IOMMU_SVA
+	select IOMMU_IOVA
+	select IOMMU_IO_PGTABLE
+	select IOASID
+	select PCI_MSI
+	select PCI_ATS
+	select PCI_PRI
+	select PCI_PASID
+	select MMU_NOTIFIER
+	help
+	  Support for devices following RISC-V IOMMU specification.
+
+	  If unsure, say N here.
+
