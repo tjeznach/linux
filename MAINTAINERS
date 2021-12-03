@@ -18972,6 +18972,12 @@ L:	iommu@lists.linux.dev
 L:	linux-riscv@lists.infradead.org
 S:	Maintained
 F:	Documentation/devicetree/bindings/iommu/riscv,iommu.yaml
+F:	drivers/iommu/riscv/Kconfig
+F:	drivers/iommu/riscv/Makefile
+F:	drivers/iommu/riscv/iommu-bits.h
+F:	drivers/iommu/riscv/iommu-platform.c
+F:	drivers/iommu/riscv/iommu.c
+F:	drivers/iommu/riscv/iommu.h
 
 RISC-V MICROCHIP FPGA SUPPORT
 M:	Conor Dooley <conor.dooley@microchip.com>

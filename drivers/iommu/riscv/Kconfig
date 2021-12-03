@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# RISC-V IOMMU support
+
+config RISCV_IOMMU
+	def_bool y if RISCV && 64BIT && MMU
+	depends on RISCV && 64BIT && MMU
+	select DMA_OPS
+	select IOMMU_API
+	select IOMMU_IOVA
+	help
+	  Support for implementations of the RISC-V IOMMU architecture that
+	  complements the RISC-V MMU capabilities, providing similar address
+	  translation and protection functions for accesses from I/O devices.
+
+	  Say Y here if your SoC includes an IOMMU device implementing
+	  the RISC-V IOMMU architecture.
