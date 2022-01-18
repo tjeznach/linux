@@ -30,7 +30,6 @@ config ARM_GIC_V2M
 
 config GIC_NON_BANKED
 	bool
-
 config ARM_GIC_V3
 	bool
 	select IRQ_DOMAIN_HIERARCHY
@@ -544,6 +543,12 @@ config SIFIVE_PLIC
 	depends on RISCV
 	select IRQ_DOMAIN_HIERARCHY
 	select GENERIC_IRQ_EFFECTIVE_AFF_MASK if SMP
+
+config RISCV_IMSIC
+	bool
+	depends on RISCV
+	select IRQ_DOMAIN_HIERARCHY
+	select GENERIC_MSI_IRQ
 
 config EXYNOS_IRQ_COMBINER
 	bool "Samsung Exynos IRQ combiner support" if COMPILE_TEST
