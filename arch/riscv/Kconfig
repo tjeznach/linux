@@ -340,6 +340,17 @@ config HOTPLUG_CPU
 
 	  Say N if you want to disable CPU hotplug.
 
+config RISCV_CSR
+	tristate "/dev/cpu/*/csr - Model-specific register support"
+	help
+	  This device gives privileged processes access to the RISC-V
+	  Control Status Registers (CSRs).  It is a character device
+	  located at /dev/cpu/%d/csr for each online hart.
+	  CSR accesses are directed to a specific CPU on multi-processor
+	  systems.
+
+	  If unsure, say N.
+
 choice
 	prompt "CPU Tuning"
 	default TUNE_GENERIC
