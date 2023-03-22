@@ -19,6 +19,7 @@
 #include <linux/list.h>
 #include <linux/iommu.h>
 #include <linux/io-pgtable.h>
+#include <linux/mmu_notifier.h>
 
 #include "iommu-bits.h"
 
@@ -73,6 +74,8 @@ struct riscv_iommu_domain {
 	struct list_head endpoints;
 	struct list_head notifiers;
 	struct mutex lock;
+
+	struct mmu_notifier mn;                 /* mmu_notifier handle */
 
 	/* remove: could be a list of iommus */
 	struct riscv_iommu_device *iommu;
