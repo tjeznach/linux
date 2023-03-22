@@ -285,7 +285,8 @@ static void riscv_iommu_domain_free(struct iommu_domain *iommu_domain)
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 
-	printk("IOMMU: domain free, Stage: %d\n", domain->g_stage);
+	if (domain->mn.ops && iommu_domain->mm)
+		mmu_notifier_unregister(&domain->mn, iommu_domain->mm);
 
 	if (domain->pgtbl.cookie)
 		free_io_pgtable_ops(&domain->pgtbl.ops);
@@ -532,13 +533,38 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 	return 0;
 }
 
+static void riscv_iommu_mm_invalidate(struct mmu_notifier *mn,
+    struct mm_struct *mm, unsigned long start, unsigned long end)
+{
+	struct riscv_iommu_command cmd;
+	struct riscv_iommu_domain *domain = container_of(mn, struct riscv_iommu_domain, mn);
+	/* TODO: add ATS.INVAL if needed, cleanup GSCID/PSCID passing, IOVA range flush */
+	__cmd_inval_vma(&cmd);
+	__cmd_inval_set_gscid(&cmd, 0);
+	__cmd_inval_set_pscid(&cmd, domain->pscid);
+	riscv_iommu_post(domain->iommu, &cmd);
+	riscv_iommu_iofence_sync(domain->iommu);
+}
+
+
+static void riscv_iommu_mm_release(struct mmu_notifier *mn, struct mm_struct *mm)
+{
+	/* TODO: removed from notifier, cleanup PSCID mapping, flush IOTLB */
+}
+
+static const struct mmu_notifier_ops riscv_iommu_mmuops = {
+	.release = riscv_iommu_mm_release,
+	.invalidate_range = riscv_iommu_mm_invalidate,
+};
+
 static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 				     struct device *dev, ioasid_t pasid)
 {
-	struct mm_struct *mm;
+	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
 	struct riscv_iommu_dc *dc = ep->dc;
 	struct riscv_iommu_pc *pc = ep->pc;
+	struct mm_struct *mm;
 
 	if (!iommu_domain || !iommu_domain->mm)
 		return -EINVAL;
@@ -551,6 +577,12 @@ static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 
 	/* register mm notifier */
 	mm = iommu_domain->mm;
+	domain->pscid = pasid;
+	domain->iommu = ep->iommu;
+	domain->mn.ops = &riscv_iommu_mmuops;
+
+	if (mmu_notifier_register(&domain->mn, mm))
+	    return -ENODEV;
 
 	/* Use PASID for PSCID tag */
 	pc[pasid].ta = cpu_to_le64(FIELD_PREP(RIO_PCTA_PSCID, pasid) | RIO_PCTA_V);
@@ -906,6 +938,8 @@ static void riscv_iommu_remove_dev_pasid(struct device *dev, ioasid_t pasid)
 {
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
 	struct riscv_iommu_command cmd;
+
+	/* remove SVA iommu-domain */
 
 	/* invalidate TA.V */
 	ep->pc[pasid].ta = 0;
