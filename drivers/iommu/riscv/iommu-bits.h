@@ -30,8 +30,8 @@
  * https://github.com/riscv-non-isa/riscv-iommu
  */
 
-/* Latest spec is 9, use 3 for CMD compatibility */
-#define RIO_SPEC_DOT_VER        3
+/* Latest spec is 0.9 */
+#define RIO_SPEC_DOT_VER        0x09
 
 /* Register Layout */
 #define RIO_REG_CAP             0x0000
@@ -238,17 +238,9 @@
 /* FSC mode field when TC.RIO_TC_PDTV is set */
 #define RIO_PDTP_MODE_BARE      0
 
-#if RIO_SPEC_DOT_VER < 9
-/* Spec version 0.3 */
-#define RIO_PDTP_MODE_PD20      1
-#define RIO_PDTP_MODE_PD17      2
-#define RIO_PDTP_MODE_PD8       3
-#else
-/* Spec version 0.9 */
 #define RIO_PDTP_MODE_PD8       1
 #define RIO_PDTP_MODE_PD17      2
 #define RIO_PDTP_MODE_PD20      3
-#endif
 
 #define RIO_PDTE_VALID          BIT_ULL(0)
 #define RIO_PDTE_PPN            GENMASK_ULL(53, 10)
@@ -301,45 +293,6 @@
 #define RIO_CMD_ATS_INVAL       0x004
 #define RIO_CMD_ATS_PRGR        0x084
 
-#if RIO_SPEC_DOT_VER < 9
-/* Spec version 0.3 */
-
-/* opcode == IOTINVAL.* */
-#define RIO_IOTINVAL_PSCV       0x00000400
-#define RIO_IOTINVAL_AV         0x00000800
-#define RIO_IOTINVAL_GV         0x00001000
-#define RIO_IOTINVAL_PSCID      0x0000000FFFFF0000ULL
-#define RIO_IOTINVAL_GSCID      0x00FFFF0000000000ULL
-
-/* opcode == IOFENCE.* */
-#define RIO_IOFENCE_PR          0x00000400
-#define RIO_IOFENCE_PW          0x00000800
-#define RIO_IOFENCE_AV          0x00001000
-#define RIO_IOFENCE_DATA        0xFFFFFFFF00000000ULL
-
-/* opcode == IODIR.* */
-#define RIO_IODIR_DV            0x0000000000000400ULL
-#define RIO_IODIR_PID           0x0000000FFFFF0000ULL
-#define RIO_IODIR_DID           0xFFFFFF0000000000ULL
-
-/* opcode == ATS */
-#define RIO_ATS_PV              BIT_ULL(32)
-#define RIO_ATS_DSV             BIT_ULL(33)
-#define RIO_ATS_PID             GENMASK_ULL(31, 12)
-#define RIO_ATS_RID             GENMASK_ULL(55, 40)
-#define RIO_ATS_DSEG            GENMASK_ULL(63, 56)
-
-/* riscv_iommu_event.reason */
-#define RIO_EVENT_DID           0x0000000000FFFFFFULL
-#define RIO_EVENT_PID           0x00000FFFFF000000ULL
-#define RIO_EVENT_PV            0x0000100000000000ULL
-#define RIO_EVENT_PRIV          0x0000200000000000ULL
-#define RIO_EVENT_CAUSE         0xFFF0000000000000ULL
-#define RIO_EVENT_TTYP          0x000FC00000000000ULL
-
-#else
-/* Spec version 0.9 */
-
 /* opcode == IOTINVAL.* */
 #define RIO_IOTINVAL_AV         BIT_ULL(10)
 #define RIO_IOTINVAL_PSCV       BIT_ULL(32)
@@ -373,8 +326,6 @@
 #define RIO_EVENT_PRIV          BIT_ULL(33)
 #define RIO_EVENT_TTYP          GENMASK_ULL(39, 34)
 #define RIO_EVENT_DID           GENMASK_ULL(63, 40)
-
-#endif
 
 /*
  * HPM Event IDs.
