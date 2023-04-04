@@ -80,6 +80,7 @@ static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
 	size_t size = 0;
 	pte_t *pte;
 	pte_t pte_val;
+	pgprot_t pte_prot;
 
 	if (domain->domain.type == IOMMU_DOMAIN_BLOCKED)
 		return -ENODEV;
@@ -94,6 +95,10 @@ static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
 		return -EIO;
 	}
 
+	pte_prot = (prot & IOMMU_WRITE) ?
+		__pgprot(_PAGE_BASE | _PAGE_READ | _PAGE_WRITE | _PAGE_DIRTY) :
+		__pgprot(_PAGE_BASE | _PAGE_READ);
+
 	while (pgcount--) {
 		pte = riscv_iommu_pgd_walk(domain, iova, get_zeroed_page, gfp);
 		if (!pte) {
@@ -101,9 +106,7 @@ static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
 			return -ENOMEM;
 		}
 
-		pte_val = pfn_pte(phys_to_pfn(phys),
-				  (prot & IOMMU_WRITE) ? PAGE_WRITE :
-				  PAGE_READ);
+		pte_val = pfn_pte(phys_to_pfn(phys), pte_prot);
 
 		set_pte(pte, pte_val);
 
