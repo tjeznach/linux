@@ -25,50 +25,31 @@ static void riscv_iommu_free_pgtable(struct io_pgtable *iop)
 	printk("io-pgtable for riscv released\n");
 }
 
-static pte_t *riscv_iommu_pgd_walk(struct riscv_iommu_domain *domain,
+static pte_t *riscv_iommu_pt_walk(pmd_t *ptp,
 				   unsigned long iova,
+				   unsigned shift, bool root,
 				   unsigned long (*pd_alloc)(gfp_t), gfp_t gfp)
 {
-	/* TODO: merge dev/iopgtable */
-	pgd_t *pgd;
-	p4d_t *p4d;
-	pud_t *pud;
-	pmd_t *pmd;
+	pmd_t *pte;
 	unsigned long pfn;
 
-	pgd = pgd_offset_pgd(domain->pgd_root, iova);
-	if (pgd_none(*pgd)) {
+	if (root)
+		pte = ptp + ((iova >> shift) & (PTRS_PER_PMD - 1));
+	else
+		pte = (pmd_t *)pfn_to_virt(__page_val_to_pfn(pmd_val(*ptp))) +
+				((iova >> shift) & (PTRS_PER_PMD - 1));
+
+	if (shift == PAGE_SHIFT)
+		return (pte_t *)pte;
+
+	if (pmd_none(*pte)) {
 		pfn = pd_alloc ? virt_to_pfn(pd_alloc(gfp)) : 0;
 		if (!pfn)
 			return NULL;
-		set_pgd(pgd, pfn_pgd(pfn, __pgprot(_PAGE_TABLE)));
+		set_pmd(pte, __pmd((pfn << _PAGE_PFN_SHIFT) | _PAGE_TABLE));
 	}
 
-	p4d = p4d_offset(pgd, iova);
-	if (p4d_none(*p4d)) {
-		pfn = pd_alloc ? virt_to_pfn(pd_alloc(gfp)) : 0;
-		if (!pfn)
-			return NULL;
-		set_p4d(p4d, __p4d((pfn << _PAGE_PFN_SHIFT) | _PAGE_TABLE));
-	}
-
-	pud = pud_offset(p4d, iova);
-	if (pud_none(*pud)) {
-		pfn = pd_alloc ? virt_to_pfn(pd_alloc(gfp)) : 0;
-		if (!pfn)
-			return NULL;
-		set_pud(pud, __pud((pfn << _PAGE_PFN_SHIFT) | _PAGE_TABLE));
-	}
-
-	pmd = pmd_offset(pud, iova);
-	if (pmd_none(*pmd)) {
-		pfn = pd_alloc ? virt_to_pfn(pd_alloc(gfp)) : 0;
-		if (!pfn)
-			return NULL;
-		set_pmd(pmd, __pmd((pfn << _PAGE_PFN_SHIFT) | _PAGE_TABLE));
-	}
-
-	return pte_offset_kernel(pmd, iova);
+	return riscv_iommu_pt_walk(pte, iova, shift - 9, false, pd_alloc, gfp);
 }
 
 static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
@@ -100,7 +81,12 @@ static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
 		__pgprot(_PAGE_BASE | _PAGE_READ);
 
 	while (pgcount--) {
-		pte = riscv_iommu_pgd_walk(domain, iova, get_zeroed_page, gfp);
+		pte = riscv_iommu_pt_walk((pmd_t *)domain->pgd_root,
+								  iova,
+								  PGDIR_SHIFT,
+								  true,
+								  get_zeroed_page,
+								  gfp);
 		if (!pte) {
 			*mapped = size;
 			return -ENOMEM;
@@ -136,7 +122,12 @@ static size_t riscv_iommu_unmap_pages(struct io_pgtable_ops *ops,
 	}
 
 	while (pgcount--) {
-		pte = riscv_iommu_pgd_walk(domain, iova, NULL, 0);
+		pte = riscv_iommu_pt_walk((pmd_t *)domain->pgd_root,
+								  iova,
+								  PGDIR_SHIFT,
+								  true,
+								  NULL,
+								  0);
 		if (!pte)
 			return size;
 
@@ -159,7 +150,12 @@ static phys_addr_t riscv_iommu_iova_to_phys(struct io_pgtable_ops *ops,
 	if (domain->domain.type == IOMMU_DOMAIN_IDENTITY)
 		return (phys_addr_t) iova;
 
-	pte = riscv_iommu_pgd_walk(domain, iova, NULL, 0);
+	pte = riscv_iommu_pt_walk((pmd_t *)domain->pgd_root,
+							  iova,
+							  PGDIR_SHIFT,
+							  true,
+							  NULL,
+							  0);
 	if (!pte || !pte_present(*pte))
 		return 0;
 
