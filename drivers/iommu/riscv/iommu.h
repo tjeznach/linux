@@ -23,6 +23,11 @@
 
 #include "iommu-bits.h"
 
+#define IOMMU_PAGE_SIZE_4K		BIT_ULL(12)
+#define IOMMU_PAGE_SIZE_2M		BIT_ULL(21)
+#define IOMMU_PAGE_SIZE_1G		BIT_ULL(30)
+#define IOMMU_PAGE_SIZE_512G	BIT_ULL(39)
+
 struct riscv_iommu_queue {
 	dma_addr_t base_dma;
 	void *base;
