@@ -42,7 +42,8 @@ static void riscv_iommu_free_pgtable(struct io_pgtable *iop)
 static pte_t *riscv_iommu_pt_walk_alloc(pmd_t *ptp,
 				   unsigned long iova,
 				   unsigned shift, bool root, size_t pgsize,
-				   unsigned long (*pd_alloc)(gfp_t), gfp_t gfp)
+				   unsigned long (*pd_alloc)(gfp_t), gfp_t gfp,
+				   bool *updated)
 {
 	pmd_t *pte;
 	unsigned long pfn;
@@ -53,8 +54,12 @@ static pte_t *riscv_iommu_pt_walk_alloc(pmd_t *ptp,
 		pte = (pmd_t *)pfn_to_virt(__page_val_to_pfn(pmd_val(*ptp))) +
 				((iova >> shift) & (PTRS_PER_PMD - 1));
 
-	if ((1 << shift) <= pgsize)
+	if ((1 << shift) <= pgsize) {
+		if (pmd_present(*pte))
+			*updated = true;
+
 		return (pte_t *)pte;
+	}
 
 	if (pmd_none(*pte)) {
 		pfn = pd_alloc ? virt_to_pfn(pd_alloc(gfp)) : 0;
@@ -64,7 +69,7 @@ static pte_t *riscv_iommu_pt_walk_alloc(pmd_t *ptp,
 	}
 
 	return riscv_iommu_pt_walk_alloc(pte, iova, shift - 9, false,
-									 pgsize, pd_alloc, gfp);
+									 pgsize, pd_alloc, gfp, updated);
 }
 
 static pte_t *riscv_iommu_pt_walk_fetch(pmd_t *ptp,
@@ -99,6 +104,7 @@ static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
 	pte_t *pte;
 	pte_t pte_val;
 	pgprot_t pte_prot;
+	bool updated = false;
 
 	if (domain->domain.type == IOMMU_DOMAIN_BLOCKED)
 		return -ENODEV;
@@ -120,7 +126,8 @@ static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
 										true,
 										page_size,
 										get_zeroed_page,
-										gfp);
+										gfp,
+										&updated);
 		if (!pte) {
 			*mapped = size;
 			return -ENOMEM;
@@ -134,6 +141,9 @@ static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
 		iova += page_size;
 		phys += page_size;
 	}
+
+	if (updated)
+		domain->domain.ops->flush_iotlb_all(&domain->domain);
 
 	*mapped = size;
 	return 0;
