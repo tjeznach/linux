@@ -20,6 +20,9 @@
 	container_of(container_of((x), struct io_pgtable, ops), \
 			     struct riscv_iommu_domain, pgtbl)
 
+#define io_pgtable_to_domain(x) \
+	container_of((x), struct riscv_iommu_domain, pgtbl)
+
 static inline size_t get_page_size(size_t size)
 {
        if (size >= IOMMU_PAGE_SIZE_512G)
@@ -34,9 +37,35 @@ static inline size_t get_page_size(size_t size)
        return IOMMU_PAGE_SIZE_4K;
 }
 
+static void riscv_iommu_pt_walk_free(pmd_t *ptp, unsigned shift, bool root)
+{
+	pmd_t *pte, *pt_base;
+	int i;
+
+	if (shift == PAGE_SHIFT)
+		return;
+
+	if (root)
+		pt_base = ptp;
+	else
+		pt_base = (pmd_t *)pfn_to_virt(__page_val_to_pfn(pmd_val(*ptp)));
+
+	for (i = 0; i < PTRS_PER_PMD; i++) {
+		pte = pt_base + i;
+		// Recursively free all sub page table pages
+		if (pmd_present(*pte) && !pmd_leaf(*pte))
+			riscv_iommu_pt_walk_free(pte, shift - 9, false);
+	}
+
+	// Now free the current page table page
+	if (!root && pmd_present(*pt_base))
+		free_page((unsigned long)pt_base);
+}
+
 static void riscv_iommu_free_pgtable(struct io_pgtable *iop)
 {
-	printk("io-pgtable for riscv released\n");
+	struct riscv_iommu_domain *domain = io_pgtable_to_domain(iop);
+	riscv_iommu_pt_walk_free((pmd_t *)domain->pgd_root, PGDIR_SHIFT, true);
 }
 
 static pte_t *riscv_iommu_pt_walk_alloc(pmd_t *ptp,
@@ -55,9 +84,11 @@ static pte_t *riscv_iommu_pt_walk_alloc(pmd_t *ptp,
 				((iova >> shift) & (PTRS_PER_PMD - 1));
 
 	if ((1 << shift) <= pgsize) {
-		if (pmd_present(*pte))
+		if (pmd_present(*pte)) {
 			*updated = true;
-
+			if (!pmd_leaf(*pte))
+				riscv_iommu_pt_walk_free(pte, shift - 9, false);
+		}
 		return (pte_t *)pte;
 	}
 
@@ -188,7 +219,7 @@ static phys_addr_t riscv_iommu_iova_to_phys(struct io_pgtable_ops *ops,
 		return (phys_addr_t) iova;
 
 	pte = riscv_iommu_pt_walk_fetch((pmd_t *)domain->pgd_root,
-							  		iova, PGDIR_SHIFT, true);
+									iova, PGDIR_SHIFT, true);
 	if (!pte || !pte_present(*pte))
 		return 0;
 
