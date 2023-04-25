@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright © 2021-2022, Rivos Inc.
+ * Copyright © 2022-2023 Rivos Inc.
+ * Copyright © 2023 FORTH-ICS/CARV
  *
  * RISC-V Ziommu - IOMMU Interface Specification.
  *
- * Authors: Tomasz Jeznach <tjeznach@rivosinc.com>
- *
+ * Authors
+ *	Tomasz Jeznach <tjeznach@rivosinc.com>
+ *	Nick Kossifidis <mick@ics.forth.gr>
  */
 
 #ifndef _RISCV_IOMMU_H_
@@ -31,12 +33,27 @@
 struct riscv_iommu_queue {
 	dma_addr_t base_dma;
 	void *base;
-	u32 len;		/* single item length */
+	size_t len;		/* single item length */
 	u32 cnt;		/* items count */
 	u32 lui;		/* last used index, consumer/producer share */
-	u32 qbr;		/* queue base register offset */
-	u32 qcr;		/* queue control and status register offset */
+	unsigned qbr;		/* queue base register offset */
+	unsigned qcr;		/* queue control and status register offset */
 	int irq;		/* registered interrupt number */
+	bool in_iomem;		/* indicates queue data are in I/O memory  */
+};
+
+enum riscv_queue_ids {
+	RISCV_IOMMU_COMMAND_QUEUE	= 0,
+	RISCV_IOMMU_FAULT_QUEUE		= 1,
+	RISCV_IOMMU_PAGE_REQUEST_QUEUE	= 2
+};
+
+/* TODO: Readback icvec */
+enum riscv_default_virqs {
+	RISCV_IOMMU_INTR_CQ = 0,
+	RISCV_IOMMU_INTR_FQ = 1,
+	RISCV_IOMMU_INTR_PM = 2,
+	RISCV_IOMMU_INTR_PQ = 3
 };
 
 struct riscv_iommu_device {
@@ -46,7 +63,17 @@ struct riscv_iommu_device {
 	/* hardware control register space */
 	void __iomem *reg;
 	u64 reg_phys;
-	u64 reg_size;
+
+	/* IRQs for the various queues */
+	int irq_cmdq;
+	int irq_fltq;
+	int irq_pm;
+	int irq_priq;
+
+	/* Queue lengths */
+	int cmdq_len;
+	int fltq_len;
+	int priq_len;
 
 	/* supported and enabled hardware capabilities */
 	u64 cap;
@@ -58,6 +85,7 @@ struct riscv_iommu_device {
 	unsigned long sync;	/* Notification page */
 	unsigned long ddtp;	/* device directory table root pointer */
 	unsigned ddt_mode;	/* device directory table mode */
+	bool ddtp_in_iomem;
 
 	/* I/O page fault queue */
 	struct iopf_queue *pq_work;
@@ -87,7 +115,7 @@ struct riscv_iommu_domain {
 
 	bool g_stage;				/* TODO: convert to domain-mode ? */
 	struct riscv_iommu_domain *nested;	/* G-Stage protection domain if any */
-	struct riscv_iommu_msipte *msi_root;	/* INT mapping */
+	struct riscv_iommu_msi_pte *msi_root;	/* INT mapping */
 
 	unsigned id;		/* GSCID or PSCID */
 	unsigned mode;		/* RIO_ATP_MODE_* enum */
@@ -150,7 +178,7 @@ static inline void riscv_iommu_writeq(struct riscv_iommu_device *iommu,
 	writeq_relaxed(val, iommu->reg + offset);
 }
 
-int riscv_iommu_probe(struct device *dev, phys_addr_t reg_phys, size_t reg_size);
+int riscv_iommu_init_common(struct riscv_iommu_device *iommu);
 void riscv_iommu_remove(struct device *dev);
 
 int riscv_iommu_sysfs_add(struct riscv_iommu_device *iommu);
