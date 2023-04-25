@@ -83,7 +83,7 @@ static pte_t *riscv_iommu_pt_walk_alloc(pmd_t *ptp,
 		pte = (pmd_t *)pfn_to_virt(__page_val_to_pfn(pmd_val(*ptp))) +
 				((iova >> shift) & (PTRS_PER_PMD - 1));
 
-	if ((1 << shift) <= pgsize) {
+	if ((1ULL << shift) <= pgsize) {
 		if (pmd_present(*pte)) {
 			*updated = true;
 			if (!pmd_leaf(*pte))
