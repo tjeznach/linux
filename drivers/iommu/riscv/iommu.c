@@ -335,6 +335,13 @@ static inline void riscv_iommu_cmd_inval_vma(struct riscv_iommu_command *cmd)
 	cmd->dword1 = 0;
 }
 
+static void riscv_iommu_cmd_inval_gvma(struct riscv_iommu_command *cmd)
+{
+	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_IOTINVAL_OPCODE) |
+		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_IOTINVAL_FUNC_GVMA);
+	cmd->dword1 = 0;
+}
+
 static inline void riscv_iommu_cmd_inval_set_addr(struct riscv_iommu_command *cmd, u64 addr)
 {
 	cmd->dword0 |= RISCV_IOMMU_CMD_IOTINVAL_AV;
@@ -371,11 +378,79 @@ static inline void riscv_iommu_cmd_iofence_set_av(struct riscv_iommu_command *cm
 	cmd->dword1 = (addr >> 2);
 }
 
-static inline void riscv_iommu_cmd_ats_pgr(struct riscv_iommu_command *cmd)
+static void riscv_iommu_cmd_ats_inval(struct riscv_iommu_command *cmd)
+{
+	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_ATS_OPCODE) |
+		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_ATS_FUNC_INVAL);
+	cmd->dword1 = 0;
+}
+
+static inline void riscv_iommu_cmd_ats_prgr(struct riscv_iommu_command *cmd)
 {
 	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_ATS_OPCODE) |
 		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_ATS_FUNC_PRGR);
 	cmd->dword1 = 0;
+}
+
+static void riscv_iommu_cmd_ats_set_rid(struct riscv_iommu_command *cmd, u32 rid)
+{
+	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_ATS_RID, rid);
+}
+
+static void riscv_iommu_cmd_ats_set_pid(struct riscv_iommu_command *cmd, u32 pid)
+{
+	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_ATS_PID, pid) | RISCV_IOMMU_CMD_ATS_PV;
+}
+
+static void riscv_iommu_cmd_ats_set_dseg(struct riscv_iommu_command *cmd, u8 seg)
+{
+	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_ATS_DSEG, seg) | RISCV_IOMMU_CMD_ATS_DSV;
+}
+
+static void riscv_iommu_cmd_ats_set_payload(struct riscv_iommu_command *cmd, u64 payload)
+{
+	cmd->dword1 = payload;
+}
+
+// Prepare the ATS invalidation payload
+static unsigned long riscv_iommu_ats_inval_payload(unsigned long start,
+									   unsigned long end,
+									   bool global_inv) {
+	size_t len = end - start + 1;
+	unsigned long payload = 0;
+
+	// PCI Express specification
+	// Section 10.2.3.2 Translation Range Size (S) Field
+	if (len < PAGE_SIZE)
+		len = PAGE_SIZE;
+	else
+		len = __roundup_pow_of_two(len);
+
+	payload =  (start & ~(len - 1)) | (((len - 1) >> 12) << 11);
+
+	if (global_inv)
+		payload |= RISCV_IOMMU_CMD_ATS_INVAL_G;
+
+	return payload;
+}
+
+// Prepare the ATS invalidation payload for all translations to be
+// invalidated.
+static unsigned long riscv_iommu_ats_inval_all_payload(bool global_inv) {
+	unsigned long payload = GENMASK_ULL(62, 11);
+
+	if (global_inv)
+		payload |= RISCV_IOMMU_CMD_ATS_INVAL_G;
+
+	return payload;
+}
+
+// Prepare the ATS "Page Request Group Response" payload
+static unsigned long riscv_iommu_ats_prgr_payload(u16 dest_id, u8 resp_code,
+						   u16 grp_idx) {
+	return FIELD_PREP(RISCV_IOMMU_CMD_ATS_PRGR_DST_ID, dest_id) |
+		FIELD_PREP(RISCV_IOMMU_CMD_ATS_PRGR_RESP_CODE, resp_code) |
+		FIELD_PREP(RISCV_IOMMU_CMD_ATS_PRGR_PRG_INDEX, grp_idx);
 }
 
 /* TODO: Convert into lock-less MPSC implementation. */
