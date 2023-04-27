@@ -557,12 +557,34 @@ static void riscv_iommu_mm_invalidate(struct mmu_notifier *mn,
     struct mm_struct *mm, unsigned long start, unsigned long end)
 {
 	struct riscv_iommu_command cmd;
+	struct riscv_iommu_endpoint *endpoint;
 	struct riscv_iommu_domain *domain = container_of(mn, struct riscv_iommu_domain, mn);
-	/* TODO: add ATS.INVAL if needed, cleanup GSCID/PSCID passing, IOVA range flush */
+	/*
+	 * The mm_types defines vm_end as the first byte after the end address,
+	 * different from IOMMU subsystem using the last address of an address
+	 * range. So do a simple translation here by updating what end means.
+	 */
+	unsigned long payload = riscv_iommu_ats_inval_payload(start, end - 1, true);
+
+	/* TODO: cleanup GSCID/PSCID passing, IOVA range flush */
 	riscv_iommu_cmd_inval_vma(&cmd);
 	riscv_iommu_cmd_inval_set_gscid(&cmd, 0);
 	riscv_iommu_cmd_inval_set_pscid(&cmd, domain->pscid);
 	riscv_iommu_post(domain->iommu, &cmd);
+	riscv_iommu_iofence_sync(domain->iommu);
+
+	// ATS invalidation for every device and for specific translation range.
+	list_for_each_entry(endpoint, &domain->endpoints, domains) {
+		if (!endpoint->ats_enabled)
+			continue;
+
+		riscv_iommu_cmd_ats_inval(&cmd);
+		riscv_iommu_cmd_ats_set_dseg(&cmd, endpoint->domid);
+		riscv_iommu_cmd_ats_set_rid(&cmd, endpoint->devid);
+		riscv_iommu_cmd_ats_set_pid(&cmd, domain->pscid);
+		riscv_iommu_cmd_ats_set_payload(&cmd, payload);
+		riscv_iommu_post(domain->iommu, &cmd);
+	}
 	riscv_iommu_iofence_sync(domain->iommu);
 }
 
@@ -1410,6 +1432,10 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 	else
 		dc->tc = cpu_to_le64(RISCV_IOMMU_DC_TC_V);
 	ep->dc = dc;
+
+	// Append the endpoint to the list of endpoints attached to this domain
+	list_add_tail(&ep->domains, &domain->endpoints);
+
 	mutex_unlock(&domain->lock);
 	riscv_iommu_iodir_inv_devid(ep->iommu, ep->devid);
 
@@ -1481,6 +1507,7 @@ static void riscv_iommu_remove_dev_pasid(struct device *dev, ioasid_t pasid)
 {
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
 	struct riscv_iommu_command cmd;
+	unsigned long payload = riscv_iommu_ats_inval_all_payload(false);
 
 	/* remove SVA iommu-domain */
 
@@ -1499,6 +1526,17 @@ static void riscv_iommu_remove_dev_pasid(struct device *dev, ioasid_t pasid)
 	riscv_iommu_post(ep->iommu, &cmd);
 
 	/* 3. Wait IOATC flush to happen */
+	riscv_iommu_iofence_sync(ep->iommu);
+
+	/* 4. ATS invalidation */
+	riscv_iommu_cmd_ats_inval(&cmd);
+	riscv_iommu_cmd_ats_set_dseg(&cmd, ep->domid);
+	riscv_iommu_cmd_ats_set_rid(&cmd, ep->devid);
+	riscv_iommu_cmd_ats_set_pid(&cmd, pasid);
+	riscv_iommu_cmd_ats_set_payload(&cmd, payload);
+	riscv_iommu_post(ep->iommu, &cmd);
+
+	/* 5. Wait DevATC flush to happen */
 	riscv_iommu_iofence_sync(ep->iommu);
 }
 
@@ -1558,6 +1596,8 @@ static void riscv_iommu_flush_iotlb_all(struct iommu_domain *iommu_domain)
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 	struct riscv_iommu_command cmd;
+	struct riscv_iommu_endpoint *endpoint;
+	unsigned long payload = riscv_iommu_ats_inval_all_payload(true);
 
 	riscv_iommu_cmd_inval_vma(&cmd);
 
@@ -1569,6 +1609,20 @@ static void riscv_iommu_flush_iotlb_all(struct iommu_domain *iommu_domain)
 		riscv_iommu_cmd_inval_set_gscid(&cmd, domain->nested->id);
 
 	riscv_iommu_post(domain->iommu, &cmd);
+	riscv_iommu_iofence_sync(domain->iommu);
+
+	// ATS invalidation for every device and for every translation
+	list_for_each_entry(endpoint, &domain->endpoints, domains) {
+		if (!endpoint->ats_enabled)
+			continue;
+
+		riscv_iommu_cmd_ats_inval(&cmd);
+		riscv_iommu_cmd_ats_set_dseg(&cmd, endpoint->domid);
+		riscv_iommu_cmd_ats_set_rid(&cmd, endpoint->devid);
+		riscv_iommu_cmd_ats_set_pid(&cmd, domain->pscid);
+		riscv_iommu_cmd_ats_set_payload(&cmd, payload);
+		riscv_iommu_post(domain->iommu, &cmd);
+	}
 	riscv_iommu_iofence_sync(domain->iommu);
 }
 
