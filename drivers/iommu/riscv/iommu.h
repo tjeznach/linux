@@ -130,6 +130,8 @@ struct riscv_iommu_endpoint {
 	unsigned devid;      			/* PCI bus:device:function number */
 	unsigned domid;    			/* PCI domain number, segment */
 
+	struct mutex lock;
+
 	struct riscv_iommu_device *iommu;	/* -> iommu (virtual, collection of) */
 	struct riscv_iommu_domain *domain;	/* -> attached domain, only one at a time, nesting via domain->domain */
 	struct list_head domains;		/* -> collection of endpoints attached to the same domain */
