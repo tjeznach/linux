@@ -1169,6 +1169,17 @@ static void riscv_iommu_probe_finalize(struct device *dev)
 	iommu_setup_dma_ops(dev, 0, U64_MAX);
 }
 
+static void riscv_iommu_detach_endpoint(struct riscv_iommu_endpoint *ep)
+{
+	ep->domain = NULL;
+
+	// Remove the endpoint from the list of endpoints
+	list_del(&ep->domains);
+
+	// Invalidate DDT for current endpoint
+	riscv_iommu_iodir_inv_devid(ep->iommu, ep->devid);
+}
+
 static void riscv_iommu_release_device(struct device *dev)
 {
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
@@ -1176,15 +1187,15 @@ static void riscv_iommu_release_device(struct device *dev)
 
 	dev_info(dev, "device with devid %i released\n", ep->devid);
 
-	/* Device must be already removed from protection domain */
-	WARN_ON(ep->domain);
+	if (ep->domain) {
+		riscv_iommu_detach_endpoint(ep);
+	}
 
 	riscv_iommu_disable_pci_ep(dev);
 	ep->dc->tc = 0ULL;
 	// ep->dc->fsc = cpu_to_le64(virt_to_pfn(ep->iommu->zero) | SATP_MODE);
 	ep->dc->iohgatp = 0ULL;
 	wmb();
-	riscv_iommu_iodir_inv_devid(iommu, ep->devid);
 
 	mutex_lock(&iommu->eps_mutex);
 	rb_erase(&ep->node, &iommu->eps);
@@ -1265,9 +1276,27 @@ static struct iommu_domain *riscv_iommu_domain_alloc(unsigned type)
 	return &domain->domain;
 }
 
+static void riscv_iommu_domain_free_endpoints(struct riscv_iommu_domain *domain)
+{
+	struct riscv_iommu_endpoint *ep;
+
+	mutex_lock(&domain->lock);
+
+	while (!list_empty(&domain->endpoints)) {
+		ep = list_first_entry(&domain->endpoints,
+					 struct riscv_iommu_endpoint, domains);
+		BUG_ON(!ep->domain);
+		riscv_iommu_detach_endpoint(ep);
+	}
+
+	mutex_unlock(&domain->lock);
+}
+
 static void riscv_iommu_domain_free(struct iommu_domain *iommu_domain)
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
+
+	riscv_iommu_domain_free_endpoints(domain);
 
 	if (domain->mn.ops && iommu_domain->mm)
 		mmu_notifier_unregister(&domain->mn, iommu_domain->mm);
@@ -1432,6 +1461,7 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 	else
 		dc->tc = cpu_to_le64(RISCV_IOMMU_DC_TC_V);
 	ep->dc = dc;
+	ep->domain = domain;
 
 	// Append the endpoint to the list of endpoints attached to this domain
 	list_add_tail(&ep->domains, &domain->endpoints);
