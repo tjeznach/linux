@@ -918,7 +918,7 @@ static struct riscv_iommu_dc *riscv_iommu_get_dc(struct riscv_iommu_device
 	const bool base_format = !(iommu->cap & RISCV_IOMMU_CAP_MSI_FLAT);
 	unsigned depth = iommu->ddt_mode - RISCV_IOMMU_DDTP_MODE_1LVL;
 	u8 ddi_bits[3] = {0};
-	u64 *ddt = NULL;
+	u64 *ddtp = NULL, ddt;
 
 	if (iommu->ddt_mode == RISCV_IOMMU_DDTP_MODE_OFF ||
 	    iommu->ddt_mode == RISCV_IOMMU_DDTP_MODE_BARE)
@@ -954,27 +954,37 @@ static struct riscv_iommu_dc *riscv_iommu_get_dc(struct riscv_iommu_device
 		return NULL;
 
 	/* Get to the level of the non-leaf node that holds the device context */
-	for (ddt = (u64 *) iommu->ddtp; depth-- > 0;) {
+	for (ddtp = (u64 *) iommu->ddtp; depth-- > 0;) {
 		const int split = ddi_bits[depth];
 		/*
 		 * Each non-leaf node is 64bits wide and on each level
 		 * nodes are indexed by DDI[depth].
 		 */
-		ddt += (devid >> split) & 0x1FF;
+		ddtp += (devid >> split) & 0x1FF;
 
+retry:
 		/*
 		 * Check if this node has been populated and if not
 		 * allocate a new level and populate it.
 		 */
-		if (*ddt & RISCV_IOMMU_DDTE_VALID) {
-			ddt = __va(ppn_to_phys(*ddt));
+		ddt = READ_ONCE(*ddtp);
+		if (ddt & RISCV_IOMMU_DDTE_VALID) {
+			ddtp = __va(ppn_to_phys(ddt));
 		} else {
-			// TODO: DDTP page walk management
-			unsigned long ddtp = get_zeroed_page(GFP_KERNEL);
-			if (!ddtp)
+			u64 old, new = get_zeroed_page(GFP_KERNEL);
+			if (!new)
 				return NULL;
-			*ddt = phys_to_ppn(__pa(ddtp)) | RISCV_IOMMU_DDTE_VALID;
-			ddt = (u64 *) ddtp;
+
+			old = cmpxchg64_relaxed(ddtp, ddt,
+				phys_to_ppn(__pa(new)) |
+				RISCV_IOMMU_DDTE_VALID);
+
+			if (old != ddt) {
+				free_page(new);
+				goto retry;
+			}
+
+			ddtp = (u64 *) new;
 		}
 	}
 
@@ -983,8 +993,8 @@ static struct riscv_iommu_dc *riscv_iommu_get_dc(struct riscv_iommu_device
 	 * format the device context is 4 * 64bits, and the extended format
 	 * is 8 * 64bits, hence the (3 - base_format) below.
 	 */
-	ddt += (devid & ((64 << base_format) - 1)) << (3 - base_format);
-	return (struct riscv_iommu_dc *)ddt;
+	ddtp += (devid & ((64 << base_format) - 1)) << (3 - base_format);
+	return (struct riscv_iommu_dc *)ddtp;
 }
 
 static struct riscv_iommu_device *riscv_iommu_get_device(struct device *dev)
