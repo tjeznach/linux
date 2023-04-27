@@ -1134,6 +1134,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 
 	dev_info(iommu->dev, "adding device to iommu with devid %i in domain %i\n", ep->devid, ep->domid);
 
+	mutex_init(&ep->lock);
 	INIT_LIST_HEAD(&ep->domains);
 	INIT_LIST_HEAD(&ep->regions);
 	INIT_LIST_HEAD(&ep->bindings);
@@ -1171,10 +1172,14 @@ static void riscv_iommu_probe_finalize(struct device *dev)
 
 static void riscv_iommu_detach_endpoint(struct riscv_iommu_endpoint *ep)
 {
+	mutex_lock(&ep->lock);
+
 	ep->domain = NULL;
 
 	// Remove the endpoint from the list of endpoints
 	list_del(&ep->domains);
+
+	mutex_unlock(&ep->lock);
 
 	// Invalidate DDT for current endpoint
 	riscv_iommu_iodir_inv_devid(ep->iommu, ep->devid);
@@ -1389,13 +1394,14 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 	if (!dc)
 		return -ENOMEM;
 
-	// TODO: add endpoint lock ?
 	mutex_lock(&domain->lock);
+	mutex_lock(&ep->lock);
 
 	/* allocate root pages, initialize io-pgtable ops, etc. */
 	ret = riscv_iommu_domain_finalize(domain, ep->iommu);
 	if (ret < 0) {
 		dev_err(dev, "can not finalize domain: %d\n", ret);
+		mutex_unlock(&ep->lock);
 		mutex_unlock(&domain->lock);
 		return ret;
 	}
@@ -1426,6 +1432,7 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 	/* FIXME: implement remapping device */
 	val = get_zeroed_page(GFP_KERNEL);
 	if (!val) {
+		mutex_unlock(&ep->lock);
 		mutex_unlock(&domain->lock);
 		return -ENOMEM;
 	}
@@ -1466,6 +1473,7 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 	// Append the endpoint to the list of endpoints attached to this domain
 	list_add_tail(&ep->domains, &domain->endpoints);
 
+	mutex_unlock(&ep->lock);
 	mutex_unlock(&domain->lock);
 	riscv_iommu_iodir_inv_devid(ep->iommu, ep->devid);
 
