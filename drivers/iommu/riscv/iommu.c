@@ -318,16 +318,6 @@ static int riscv_iommu_queue_init(struct riscv_iommu_device *iommu, int queue_id
 * I/O MMU Command queue chapter 3.1 *
 \***********************************/
 
-static inline void riscv_iommu_cmd_iodir_pasid(struct riscv_iommu_command *cmd,
-						unsigned devid, unsigned pasid)
-{
-	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_IODIR_OPCODE) |
-		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_IODIR_FUNC_INVAL_PDT) |
-		      FIELD_PREP(RISCV_IOMMU_CMD_IODIR_DID, devid) | RISCV_IOMMU_CMD_IODIR_DV |
-		      FIELD_PREP(RISCV_IOMMU_CMD_IODIR_PID, pasid);
-	cmd->dword1 = 0;
-}
-
 static inline void riscv_iommu_cmd_inval_vma(struct riscv_iommu_command *cmd)
 {
 	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_IOTINVAL_OPCODE) |
@@ -376,6 +366,30 @@ static inline void riscv_iommu_cmd_iofence_set_av(struct riscv_iommu_command *cm
 		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_IOFENCE_FUNC_C) |
 		      FIELD_PREP(RISCV_IOMMU_CMD_IOFENCE_DATA, data) | RISCV_IOMMU_CMD_IOFENCE_AV;
 	cmd->dword1 = (addr >> 2);
+}
+
+static inline void riscv_iommu_cmd_iodir_inval_ddt(struct riscv_iommu_command *cmd)
+{
+	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_IODIR_OPCODE) |
+		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_IODIR_FUNC_INVAL_DDT);
+	cmd->dword1 = 0;
+}
+
+static inline void riscv_iommu_cmd_iodir_inval_pdt(struct riscv_iommu_command *cmd)
+{
+	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_IODIR_OPCODE) |
+		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_IODIR_FUNC_INVAL_PDT);
+	cmd->dword1 = 0;
+}
+
+static inline void riscv_iommu_cmd_iodir_set_did(struct riscv_iommu_command *cmd, unsigned devid)
+{
+	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_IODIR_DID, devid) | RISCV_IOMMU_CMD_IODIR_DV;
+}
+
+static inline void riscv_iommu_cmd_iodir_set_pid(struct riscv_iommu_command *cmd, unsigned pasid)
+{
+	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_IODIR_PID, pasid);
 }
 
 static void riscv_iommu_cmd_ats_inval(struct riscv_iommu_command *cmd)
@@ -518,23 +532,17 @@ static bool riscv_iommu_post(struct riscv_iommu_device *iommu,
 
 static bool riscv_iommu_iodir_inv_all(struct riscv_iommu_device *iommu)
 {
-	struct riscv_iommu_command cmd = {
-		.dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_IODIR_OPCODE) |
-			  FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_IODIR_FUNC_INVAL_DDT),
-		.dword1 = 0,
-	};
+	struct riscv_iommu_command cmd;
+	riscv_iommu_cmd_iodir_inval_ddt(&cmd);
 	return riscv_iommu_post(iommu, &cmd);
 }
 
 static bool riscv_iommu_iodir_inv_devid(struct riscv_iommu_device *iommu,
 					unsigned devid)
 {
-	struct riscv_iommu_command cmd = {
-		.dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_IODIR_OPCODE) |
-			  FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_IODIR_FUNC_INVAL_DDT) |
-			  FIELD_PREP(RISCV_IOMMU_CMD_IODIR_DID, devid) | RISCV_IOMMU_CMD_IODIR_DV,
-		.dword1 = 0,
-	};
+	struct riscv_iommu_command cmd;
+	riscv_iommu_cmd_iodir_inval_ddt(&cmd);
+	riscv_iommu_cmd_iodir_set_did(&cmd, devid);
 	return riscv_iommu_post(iommu, &cmd);
 }
 
@@ -542,7 +550,9 @@ static bool riscv_iommu_iodir_inv_pasid(struct riscv_iommu_device *iommu,
 					unsigned devid, unsigned pasid)
 {
 	struct riscv_iommu_command cmd;
-	riscv_iommu_cmd_iodir_pasid(&cmd, devid, pasid);
+	riscv_iommu_cmd_iodir_inval_pdt(&cmd);
+	riscv_iommu_cmd_iodir_set_did(&cmd, devid);
+	riscv_iommu_cmd_iodir_set_pid(&cmd, pasid);
 	return riscv_iommu_post(iommu, &cmd);
 }
 
@@ -1554,8 +1564,7 @@ static void riscv_iommu_remove_dev_pasid(struct device *dev, ioasid_t pasid)
 	wmb();
 
 	/* 1. invalidate PDT entry */
-	riscv_iommu_cmd_iodir_pasid(&cmd, ep->devid, pasid);
-	riscv_iommu_post(ep->iommu, &cmd);
+	riscv_iommu_iodir_inv_pasid(ep->iommu, ep->devid, pasid);
 
 	/* 2. invalidate all matching IOATC entries */
 	riscv_iommu_cmd_inval_vma(&cmd);
