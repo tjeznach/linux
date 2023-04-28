@@ -1639,12 +1639,20 @@ static size_t riscv_iommu_unmap_pages(struct iommu_domain *iommu_domain,
 					     pgcount, gather);
 }
 
-static void riscv_iommu_flush_iotlb_all(struct iommu_domain *iommu_domain)
+static void riscv_iommu_flush_iotlb_range(struct iommu_domain *iommu_domain,
+					unsigned long *start, unsigned long *end, size_t *pgsize)
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 	struct riscv_iommu_command cmd;
 	struct riscv_iommu_endpoint *endpoint;
-	unsigned long payload = riscv_iommu_ats_inval_all_payload(true);
+	unsigned long iova;
+	unsigned long payload;
+
+	if (start && end) {
+		payload = riscv_iommu_ats_inval_payload(*start, *end, true);
+	} else {
+		payload = riscv_iommu_ats_inval_all_payload(true);
+	}
 
 	riscv_iommu_cmd_inval_vma(&cmd);
 
@@ -1655,7 +1663,15 @@ static void riscv_iommu_flush_iotlb_all(struct iommu_domain *iommu_domain)
 	else if (domain->nested)
 		riscv_iommu_cmd_inval_set_gscid(&cmd, domain->nested->id);
 
-	riscv_iommu_post(domain->iommu, &cmd);
+	if (start && end && pgsize) {
+		// Cover only the range that is needed
+		for (iova = *start; iova <= *end; iova += *pgsize) {
+			riscv_iommu_cmd_inval_set_addr(&cmd, iova);
+			riscv_iommu_post(domain->iommu, &cmd);
+		}
+	} else {
+		riscv_iommu_post(domain->iommu, &cmd);
+	}
 	riscv_iommu_iofence_sync(domain->iommu);
 
 	// ATS invalidation for every device and for every translation
@@ -1673,16 +1689,26 @@ static void riscv_iommu_flush_iotlb_all(struct iommu_domain *iommu_domain)
 	riscv_iommu_iofence_sync(domain->iommu);
 }
 
+static void riscv_iommu_flush_iotlb_all(struct iommu_domain *iommu_domain)
+{
+	riscv_iommu_flush_iotlb_range(iommu_domain, NULL, NULL, NULL);
+}
+
 static void riscv_iommu_iotlb_sync(struct iommu_domain *iommu_domain,
 				   struct iommu_iotlb_gather *gather)
 {
-	riscv_iommu_flush_iotlb_all(iommu_domain);
+	riscv_iommu_flush_iotlb_range(iommu_domain, &gather->start, &gather->end, &gather->pgsize);
 }
 
 static void riscv_iommu_iotlb_sync_map(struct iommu_domain *iommu_domain,
 				       unsigned long iova, size_t size)
 {
-	riscv_iommu_flush_iotlb_all(iommu_domain);
+	unsigned long end = iova + size - 1;
+	// Given we don't know the page size used by this range, we assume the
+	// smallest page size to ensure all possible entries are flushed from
+	// the IOATC.
+	size_t pgsize = PAGE_SIZE;
+	riscv_iommu_flush_iotlb_range(iommu_domain, &iova, &end, &pgsize);
 }
 
 static phys_addr_t riscv_iommu_iova_to_phys(struct iommu_domain *iommu_domain,
