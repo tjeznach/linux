@@ -195,6 +195,8 @@ static size_t riscv_iommu_unmap_pages(struct io_pgtable_ops *ops,
 		// release pages
 		set_pte(pte, __pte(0));
 
+		iommu_iotlb_gather_add_page(&domain->domain, gather, iova, pgsize);
+
 		size += page_size;
 		iova += page_size;
 	}
