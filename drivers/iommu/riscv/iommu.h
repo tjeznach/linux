@@ -25,9 +25,9 @@
 
 #include "iommu-bits.h"
 
-#define IOMMU_PAGE_SIZE_4K		BIT_ULL(12)
-#define IOMMU_PAGE_SIZE_2M		BIT_ULL(21)
-#define IOMMU_PAGE_SIZE_1G		BIT_ULL(30)
+#define IOMMU_PAGE_SIZE_4K	BIT_ULL(12)
+#define IOMMU_PAGE_SIZE_2M	BIT_ULL(21)
+#define IOMMU_PAGE_SIZE_1G	BIT_ULL(30)
 #define IOMMU_PAGE_SIZE_512G	BIT_ULL(39)
 
 struct riscv_iommu_queue {
@@ -81,10 +81,9 @@ struct riscv_iommu_device {
 	/* global lock, to be removed */
 	spinlock_t cq_lock;
 
-	unsigned long zero;	/* shared zeroed page */
-	unsigned long sync;	/* Notification page */
-	unsigned long ddtp;	/* device directory table root pointer */
-	unsigned ddt_mode;	/* device directory table mode */
+	/* device directory table root pointer and mode */
+	unsigned long ddtp;
+	unsigned ddt_mode;
 	bool ddtp_in_iomem;
 
 	/* I/O page fault queue */
@@ -140,7 +139,6 @@ struct riscv_iommu_endpoint {
 	struct riscv_iommu_pc *pc;		/* -> process context root, can be tracked by iommu->dc(devid)->pc(pasid) */
 
 	struct list_head regions;		// msi list
-	struct list_head bindings;		// sva list
 
 	/* end point info bits */
 	unsigned pasid_bits;
