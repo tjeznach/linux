@@ -242,7 +242,7 @@ static int riscv_iommu_queue_init(struct riscv_iommu_device *iommu, int queue_id
 	/* Get supported queue size */
 	order = FIELD_GET(RISCV_IOMMU_QUEUE_SIZE_FIELD, qbr_readback) + 1;
 	q->cnt = 1ULL << order;
-	queue_size = q->len * q->cnt;	
+	queue_size = q->len * q->cnt;
 
 	/*
 	 * In case we also failed to set PPN, it means the field is hardcoded and the
@@ -286,10 +286,10 @@ static int riscv_iommu_queue_init(struct riscv_iommu_device *iommu, int queue_id
 	qbr_readback = riscv_iommu_readq(iommu, q->qbr);
 	if (qbr_readback != qbr_val) {
 		dev_err(dev, "failed to set base register for %s\n", name);
-		goto fail;	
+		goto fail;
 	}
 
- irq:	 
+ irq:
 	if (request_threaded_irq(irq, irq_check, irq_process, IRQF_ONESHOT | IRQF_SHARED,
 				 dev_name(dev), q)) {
 		dev_err(dev, "fail to request irq %d for %s\n", irq, name);
@@ -1200,7 +1200,6 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	mutex_init(&ep->lock);
 	INIT_LIST_HEAD(&ep->domains);
 	INIT_LIST_HEAD(&ep->regions);
-	INIT_LIST_HEAD(&ep->bindings);
 
 	/* insert into IOMMU endpoint mappings */
 	mutex_lock(&iommu->eps_mutex);
@@ -1395,7 +1394,7 @@ static int riscv_iommu_domain_finalize(struct riscv_iommu_domain *domain,
 	 * TODO: Before using VA_BITS and satp_mode here, verify they
 	 * are supported by the iommu, through the capabilities register.
 	 */
-	
+
 	geometry = &domain->domain.geometry;
 	/*
 	 * Note: RISC-V Privilege spec mandates that virtual addresses
@@ -1916,7 +1915,7 @@ static int riscv_iommu_enable(struct riscv_iommu_device *iommu, unsigned request
 		 * we don't support (e.g. a custom one).
 		 */
 		if (mode_readback > RISCV_IOMMU_DDTP_MODE_MAX)
-			goto fail;		
+			goto fail;
 
 		/* We tried setting an xLVL mode but got another supported xLVL mode */
 		mode = mode_readback;
