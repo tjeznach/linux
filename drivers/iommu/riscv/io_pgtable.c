@@ -98,7 +98,7 @@ static pte_t *riscv_iommu_pt_walk_alloc(pmd_t *ptp,
 	}
 
 	return riscv_iommu_pt_walk_alloc(pte, iova, shift - 9, false,
-									 pgsize, pd_alloc, gfp);
+		pgsize, pd_alloc, gfp);
 }
 
 static pte_t *riscv_iommu_pt_walk_fetch(pmd_t *ptp,
@@ -138,7 +138,6 @@ static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
 		return -ENODEV;
 
 	if (domain->domain.type == IOMMU_DOMAIN_IDENTITY) {
-		// TODO: should we be here ?
 		*mapped = pgsize * pgcount;
 		return 0;
 	}
@@ -148,13 +147,8 @@ static int riscv_iommu_map_pages(struct io_pgtable_ops *ops,
 		__pgprot(_PAGE_BASE | _PAGE_READ);
 
 	while (pgcount--) {
-		pte = riscv_iommu_pt_walk_alloc((pmd_t *)domain->pgd_root,
-										iova,
-										PGDIR_SHIFT,
-										true,
-										page_size,
-										get_zeroed_page,
-										gfp);
+		pte = riscv_iommu_pt_walk_alloc((pmd_t *)domain->pgd_root, iova,
+			PGDIR_SHIFT, true, page_size, get_zeroed_page, gfp);
 		if (!pte) {
 			*mapped = size;
 			return -ENOMEM;
@@ -188,7 +182,7 @@ static size_t riscv_iommu_unmap_pages(struct io_pgtable_ops *ops,
 
 	while (pgcount--) {
 		pte = riscv_iommu_pt_walk_fetch((pmd_t *)domain->pgd_root,
-										iova, PGDIR_SHIFT, true);
+			iova, PGDIR_SHIFT, true);
 		if (!pte)
 			return size;
 
@@ -223,12 +217,14 @@ static phys_addr_t riscv_iommu_iova_to_phys(struct io_pgtable_ops *ops,
 
 static void riscv_iommu_tlb_inv_all(void *cookie)
 {
+	// cookie is domain
 	printk("IOMMU TLB INVAL ALL\n");
 }
 
 static void riscv_iommu_tlb_inv_walk(unsigned long iova, size_t size,
 				     size_t granule, void *cookie)
 {
+	// cookie is domain
 	printk("IOMMU TLB INVAL\n");
 }
 
@@ -236,6 +232,7 @@ static void riscv_iommu_tlb_add_page(struct iommu_iotlb_gather *gather,
 				     unsigned long iova, size_t granule,
 				     void *cookie)
 {
+	// cookie is domain
 	printk("IOMMU TLB ADD PAGE\n");
 }
 
@@ -252,7 +249,7 @@ static struct io_pgtable *riscv_iommu_alloc_pgtable(struct io_pgtable_cfg *cfg,
 //	struct riscv_iommu_domain *domain = cookie;
 	struct io_pgtable *iop = container_of(cfg, struct io_pgtable, cfg);
 
-	cfg->pgsize_bitmap = SZ_4K,
+	cfg->pgsize_bitmap = SZ_4K | SZ_2M | SZ_1G,
 	cfg->ias = 57;	// va mode, SvXX -> ias
 	cfg->oas = 57;	// pa mode, or SvXX+4 -> oas
         cfg->tlb = &riscv_iommu_flush_ops;
