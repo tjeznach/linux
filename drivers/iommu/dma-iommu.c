@@ -1711,6 +1711,44 @@ int iommu_dma_prepare_msi(struct msi_desc *desc, phys_addr_t msi_addr)
 }
 
 /**
+ * iommu_dma_select_msi() - Select a MSI page from a set of
+ * already mapped MSI pages in the IOMMU domain.
+ *
+ * @desc: MSI descriptor prepared by iommu_dma_prepare_msi()
+ * @msi_addr: physical address of the MSI page to be selected
+ *
+ * Return: 0 on success or negative error code if the select failed.
+ */
+int iommu_dma_select_msi(struct msi_desc *desc, phys_addr_t msi_addr)
+{
+	struct device *dev = msi_desc_to_dev(desc);
+	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
+	const struct iommu_dma_msi_page *msi_page;
+	struct iommu_dma_cookie *cookie;
+
+	if (!domain || !domain->iova_cookie) {
+		desc->iommu_cookie = NULL;
+		return 0;
+	}
+
+	cookie = domain->iova_cookie;
+	msi_addr &= ~(phys_addr_t)(cookie_msi_granule(cookie) - 1);
+
+	msi_page = msi_desc_get_iommu_cookie(desc);
+	if (msi_page && msi_page->phys == msi_addr)
+		return 0;
+
+	list_for_each_entry(msi_page, &cookie->msi_page_list, list) {
+		if (msi_page->phys == msi_addr) {
+			msi_desc_set_iommu_cookie(desc, msi_page);
+			return 0;
+		}
+	}
+
+	return -ENOENT;
+}
+
+/**
  * iommu_dma_compose_msi_msg() - Apply translation to an MSI message
  * @desc: MSI descriptor prepared by iommu_dma_prepare_msi()
  * @msg: MSI message containing target physical address

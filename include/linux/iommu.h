@@ -1123,6 +1123,7 @@ void iommu_setup_dma_ops(struct device *dev, u64 dma_base, u64 dma_limit);
 int iommu_get_msi_cookie(struct iommu_domain *domain, dma_addr_t base);
 
 int iommu_dma_prepare_msi(struct msi_desc *desc, phys_addr_t msi_addr);
+int iommu_dma_select_msi(struct msi_desc *desc, phys_addr_t msi_addr);
 void iommu_dma_compose_msi_msg(struct msi_desc *desc, struct msi_msg *msg);
 
 #else /* CONFIG_IOMMU_DMA */
@@ -1140,6 +1141,11 @@ static inline int iommu_get_msi_cookie(struct iommu_domain *domain, dma_addr_t b
 }
 
 static inline int iommu_dma_prepare_msi(struct msi_desc *desc, phys_addr_t msi_addr)
+{
+	return 0;
+}
+
+static inline int iommu_dma_select_msi(struct msi_desc *desc, phys_addr_t msi_addr)
 {
 	return 0;
 }

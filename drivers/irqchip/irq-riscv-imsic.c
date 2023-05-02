@@ -9,6 +9,7 @@
 #include <linux/cpu.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/iommu.h>
 #include <linux/irq.h>
 #include <linux/irqchip.h>
 #include <linux/irqchip/chained_irq.h>
@@ -432,6 +433,7 @@ static void imsic_irq_unmask(struct irq_data *d)
 static void imsic_irq_compose_msi_msg(struct irq_data *d,
 				      struct msi_msg *msg)
 {
+	struct msi_desc *desc = irq_data_get_msi_desc(d);
 	phys_addr_t msi_addr;
 	unsigned int cpu;
 	int err;
@@ -444,9 +446,14 @@ static void imsic_irq_compose_msi_msg(struct irq_data *d,
 	if (WARN_ON(err))
 		return;
 
+	err = iommu_dma_select_msi(desc, msi_addr);
+	if (WARN_ON(err))
+		return;
+
 	msg->address_hi = upper_32_bits(msi_addr);
 	msg->address_lo = lower_32_bits(msi_addr);
 	msg->data = d->hwirq;
+	iommu_dma_compose_msi_msg(desc, msg);
 }
 
 #ifdef CONFIG_SMP
@@ -485,8 +492,21 @@ static int imsic_irq_domain_alloc(struct irq_domain *domain,
 				  unsigned int nr_irqs,
 				  void *args)
 {
+	msi_alloc_info_t *info = args;
+	phys_addr_t msi_addr;
 	int i, hwirq, err = 0;
 	unsigned int cpu;
+
+	/* Map MSI address of all CPUs */
+	for_each_cpu(cpu, &imsic->lmask) {
+		err = imsic_cpu_page_phys(cpu, 0, &msi_addr);
+		if (err)
+			return err;
+
+		err = iommu_dma_prepare_msi(info->desc, msi_addr);
+		if (err)
+			return err;
+	}
 
 	err = imsic_get_cpu(&imsic->lmask, false, &cpu);
 	if (err)
