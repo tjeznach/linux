@@ -1720,14 +1720,32 @@ void iommu_dma_compose_msi_msg(struct msi_desc *desc, struct msi_msg *msg)
 	struct device *dev = msi_desc_to_dev(desc);
 	const struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
 	const struct iommu_dma_msi_page *msi_page;
+	struct iommu_dma_cookie *cookie;
+	phys_addr_t msi_addr;
 
+	if (!domain || !domain->iova_cookie)
+		return;
+
+	cookie = domain->iova_cookie;
 	msi_page = msi_desc_get_iommu_cookie(desc);
+	if (!msi_page || msi_page->phys != msi_addr) {
+		msi_addr = ((u64)msg->address_hi << 32) | msg->address_lo;
+		msi_addr &= ~(phys_addr_t)(cookie_msi_granule(cookie) - 1);
 
-	if (!domain || !domain->iova_cookie || WARN_ON(!msi_page))
+		msi_desc_set_iommu_cookie(desc, NULL);
+		list_for_each_entry(msi_page, &cookie->msi_page_list, list) {
+			if (msi_page->phys == msi_addr) {
+				msi_desc_set_iommu_cookie(desc, msi_page);
+				break;
+			}
+		}
+		msi_page = msi_desc_get_iommu_cookie(desc);
+	}
+	if (WARN_ON(!msi_page))
 		return;
 
 	msg->address_hi = upper_32_bits(msi_page->iova);
-	msg->address_lo &= cookie_msi_granule(domain->iova_cookie) - 1;
+	msg->address_lo &= cookie_msi_granule(cookie) - 1;
 	msg->address_lo += lower_32_bits(msi_page->iova);
 }
 
