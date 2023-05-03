@@ -595,7 +595,7 @@ static void riscv_iommu_mm_invalidate(struct mmu_notifier *mn,
 
 	// ATS invalidation for every device and for specific translation range.
 	list_for_each_entry(endpoint, &domain->endpoints, domains) {
-		if (!endpoint->ats_enabled)
+		if (!endpoint->pasid_enabled)
 			continue;
 
 		riscv_iommu_cmd_ats_inval(&cmd);
@@ -728,8 +728,8 @@ static irqreturn_t riscv_iommu_fltq_process(int irq, void *data)
 * Page request queue, chapter 3.3 *
 \*********************************/
 
-static struct riscv_iommu_endpoint *
-riscv_iommu_find_ep(struct riscv_iommu_device *iommu, unsigned devid)
+static struct device *riscv_iommu_get_device(struct riscv_iommu_device *iommu,
+					     unsigned devid)
 {
 	struct rb_node *node;
 	struct riscv_iommu_endpoint *ep;
@@ -744,14 +744,42 @@ riscv_iommu_find_ep(struct riscv_iommu_device *iommu, unsigned devid)
 		else if (ep->devid > devid)
 			node = node->rb_left;
 		else
-			return ep;
+			return get_device(ep->dev);
 	}
 
 	return NULL;
 }
 
+static void riscv_iommu_add_device(struct riscv_iommu_device *iommu,
+				   struct device *dev)
+{
+	struct riscv_iommu_endpoint *ep, *rb_ep;
+	struct rb_node **new_node, *parent_node = NULL;
+
+	lockdep_assert_held(&iommu->eps_mutex);
+
+	ep = dev_iommu_priv_get(dev);
+
+	new_node = &(iommu->eps.rb_node);
+	while (*new_node) {
+		rb_ep = rb_entry(*new_node, struct riscv_iommu_endpoint, node);
+		parent_node = *new_node;
+		if (rb_ep->devid > ep->devid) {
+			new_node = &((*new_node)->rb_left);
+		} else if (rb_ep->devid < ep->devid) {
+			new_node = &((*new_node)->rb_right);
+		} else {
+			dev_warn(dev, "device %u already in the tree\n", ep->devid);
+			break;
+		}
+	}
+
+	rb_link_node(&ep->node, parent_node, new_node);
+	rb_insert_color(&ep->node, &iommu->eps);
+}
+
 static int riscv_iommu_ats_prgr(struct device *dev,
-				     struct iommu_page_response *msg)
+				struct iommu_page_response *msg)
 {
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
 	struct riscv_iommu_command cmd;
@@ -788,7 +816,6 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 {
 	struct iommu_fault_event event = { 0 };
 	struct iommu_fault_page_request *prm = &event.fault.prm;
-	struct riscv_iommu_endpoint *ep;
 	int ret;
 	struct device *dev;
 
@@ -799,8 +826,7 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 	event.fault.type = IOMMU_FAULT_PAGE_REQ;
 
 	mutex_lock(&iommu->eps_mutex);
-	ep = riscv_iommu_find_ep(iommu, FIELD_GET(RISCV_IOMMU_PREQ_HDR_DID, req->hdr));
-	dev = ep ? get_device(ep->dev) : NULL;
+	dev = riscv_iommu_get_device(iommu, FIELD_GET(RISCV_IOMMU_PREQ_HDR_DID, req->hdr));
 	mutex_unlock(&iommu->eps_mutex);
 
 	if (!dev) {
@@ -835,7 +861,7 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 			resp.flags |= IOMMU_PAGE_RESP_PASID_VALID;
 			resp.pasid = prm->pasid;
 		}
-		riscv_iommu_ats_prgr(ep->dev, &resp);
+		riscv_iommu_ats_prgr(dev, &resp);
 	}
 
 	put_device(dev);
@@ -911,21 +937,18 @@ static void riscv_iommu_disable_pci_ep(struct device *dev)
 		return;
 
 	pdev = to_pci_dev(dev);
-	if (pdev->ats_enabled)
+
+	if (ep->pasid_enabled) {
 		pci_disable_ats(pdev);
-
-	if (pdev->pri_enabled)
 		pci_disable_pri(pdev);
-
-	if (pdev->pasid_enabled)
 		pci_disable_pasid(pdev);
-
-	ep->pasid_bits = 0;
+		ep->pasid_enabled = false;
+	}
 }
 
 static void riscv_iommu_enable_pci_ep(struct device *dev)
 {
-	int ret, feat, num;
+	int rc, feat, num;
 	struct pci_dev *pdev;
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
 
@@ -934,46 +957,52 @@ static void riscv_iommu_enable_pci_ep(struct device *dev)
 
 	pdev = to_pci_dev(dev);
 
-	/* Enable PASID */
+	/* ATS Supported? */
+	if (!pci_ats_supported(pdev))
+		return;
+
+	/* Page Request Interface supported? */
+	if (!pci_pri_supported(pdev))
+		return;
+
+	/* PASID Supported? */
 	feat = pci_pasid_features(pdev);
+	if (feat < 0)
+		return;
+
+	/* Let's enable PASID/PRI/ATS */
+
 	num = pci_max_pasids(pdev);
-	ret = pci_enable_pasid(pdev, feat);
-	if (ret) {
-		dev_warn(dev, "Can't enable PASID (rc: %d) cap: %u\n", ret, pdev->pasid_cap);
+	rc = pci_enable_pasid(pdev, feat);
+	if (rc) {
+		dev_warn(dev, "Can't enable PASID (rc: %d)\n", rc);
 		return;
 	}
 
-	/* Reset the PRI state of the device */
-	ret = pci_reset_pri(pdev);
-	if (ret) {
-		dev_warn(dev, "Can't reset PRI (rc: %d) en: %d\n", ret, pdev->pri_enabled);
+	rc = pci_reset_pri(pdev);
+	if (rc) {
+		dev_warn(dev, "Can't reset PRI (rc: %d)\n", rc);
 		pci_disable_pasid(pdev);
 		return;
 	}
 
-	/* Enable PRI */
-	ret = pci_enable_pri(pdev, 32);
-	if (ret) {
-		dev_warn(dev, "Can't enable PRI (rc: %d)\n", ret);
+	/* TODO: Get supported PRI queue length */
+	rc = pci_enable_pri(pdev, 32);
+	if (rc) {
+		dev_warn(dev, "Can't enable PRI (rc: %d)\n", rc);
 		pci_disable_pasid(pdev);
 		return;
 	}
 
-	/* Enable ATS */
-	ret = pci_enable_ats(pdev, PAGE_SHIFT);
-	if (ret) {
-		dev_warn(dev, "Can't enable ATS (rc: %d)\n", ret);
+	rc = pci_enable_ats(pdev, PAGE_SHIFT);
+	if (rc) {
+		dev_warn(dev, "Can't enable ATS (rc: %d)\n", rc);
 		pci_disable_pri(pdev);
 		pci_disable_pasid(pdev);
 		return;
 	}
 
-	ep->sva_supported = 1;
-	ep->pri_supported = 1;
-	ep->pri_enabled = 1;
-	ep->ats_enabled = 1;
-	ep->pasid_enabled = 1;
-
+	ep->pasid_enabled = true;
 	ep->pasid_feat = feat;
 	ep->pasid_bits = ilog2(num);
 
@@ -988,11 +1017,8 @@ static int riscv_iommu_enable_sva(struct device *dev)
 	if (!ep || !ep->iommu || !ep->iommu->pq_work)
 		return -EINVAL;
 
-	if (!ep->sva_supported)
+	if (!ep->pasid_enabled)
 		return -ENODEV;
-
-	if (!ep->pasid_enabled || !ep->pri_enabled || !ep->ats_enabled)
-		return -EINVAL;
 
 	ret = iopf_queue_add_device(ep->iommu->pq_work, dev);
 	if (ret)
@@ -1017,7 +1043,7 @@ static int riscv_iommu_enable_iopf(struct device *dev)
 {
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
 
-	if (ep && ep->pri_supported)
+	if (ep && ep->pasid_enabled)
 		return 0;
 
 	return -EINVAL;
@@ -1160,75 +1186,50 @@ retry:
 	return (struct riscv_iommu_dc *)ddtp;
 }
 
-static struct riscv_iommu_device *riscv_iommu_get_device(struct device *dev)
-{
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
-
-	if (!fwspec || fwspec->ops != &riscv_iommu_ops ||
-	    !fwspec->iommu_fwnode || !fwspec->iommu_fwnode->dev)
-		return NULL;
-
-	return dev_get_drvdata(fwspec->iommu_fwnode->dev);
-}
-
 static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 {
 	struct riscv_iommu_device *iommu;
-	struct riscv_iommu_endpoint *ep, *rb_ep;
-	struct rb_node **new_node, *parent_node = NULL;
-	struct pci_dev *pdev = dev_is_pci(dev) ? to_pci_dev(dev) : NULL;
-	struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+	struct riscv_iommu_endpoint *ep;
+	struct iommu_fwspec *fwspec;
 
-	iommu = riscv_iommu_get_device(dev);
+	fwspec = dev_iommu_fwspec_get(dev);
+	if (!fwspec || fwspec->ops != &riscv_iommu_ops ||
+	    !fwspec->iommu_fwnode || !fwspec->iommu_fwnode->dev)
+		return ERR_PTR(-ENODEV);
+
+	iommu = dev_get_drvdata(fwspec->iommu_fwnode->dev);
 	if (!iommu)
 		return ERR_PTR(-ENODEV);
+
+	if (dev_iommu_priv_get(dev))
+		return &iommu->iommu;
 
 	ep = kzalloc(sizeof(*ep), GFP_KERNEL);
 	if (!ep)
 		return ERR_PTR(-ENOMEM);
 
-	ep->dev = dev;
+	mutex_init(&ep->lock);
+	INIT_LIST_HEAD(&ep->regions);
+	INIT_LIST_HEAD(&ep->regions);
 	ep->iommu = iommu;
-	if (pdev) {
-		ep->devid = pci_dev_id(pdev);
-		ep->domid = pci_domain_nr(pdev->bus);
+	ep->dev = dev;
+
+	if (dev_is_pci(dev)) {
+		ep->devid = pci_dev_id(to_pci_dev(dev));
+		ep->domid = pci_domain_nr(to_pci_dev(dev)->bus);
 	} else {
 		/* TODO: Make this generic, for now hardcode domain id to 0 */
 		ep->devid = fwspec->ids[0];
 		ep->domid = 0;
 	}
 
-	// probe should allocate DC and set as invalid.
-	// domain attach will only update DC data based on domain type.
-	// MSI IR should also be allocated at probe if MSI IR is supported ?
-
 	dev_info(iommu->dev, "adding device to iommu with devid %i in domain %i\n", ep->devid, ep->domid);
 
-	mutex_init(&ep->lock);
-	INIT_LIST_HEAD(&ep->domains);
-	INIT_LIST_HEAD(&ep->regions);
-
-	/* insert into IOMMU endpoint mappings */
-	mutex_lock(&iommu->eps_mutex);
-	new_node = &(iommu->eps.rb_node);
-	while (*new_node) {
-		rb_ep = rb_entry(*new_node, struct riscv_iommu_endpoint, node);
-		parent_node = *new_node;
-		if (rb_ep->devid > ep->devid) {
-			new_node = &((*new_node)->rb_left);
-		} else if (rb_ep->devid < ep->devid) {
-			new_node = &((*new_node)->rb_right);
-		} else {
-			dev_warn(dev, "device %u already in the tree\n", rb_ep->devid);
-			break;
-		}
-	}
-
-	rb_link_node(&ep->node, parent_node, new_node);
-	rb_insert_color(&ep->node, &iommu->eps);
-	mutex_unlock(&iommu->eps_mutex);
-
 	dev_iommu_priv_set(dev, ep);
+
+	mutex_lock(&iommu->eps_mutex);
+	riscv_iommu_add_device(iommu, dev);
+	mutex_unlock(&iommu->eps_mutex);
 
 	riscv_iommu_enable_pci_ep(dev);
 
@@ -1557,10 +1558,9 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 	 * Mark device context as valid, synchronise device context cache.
 	 */
 	val = RISCV_IOMMU_DC_TC_V;
-	if (ep->ats_enabled)
-		val |= RISCV_IOMMU_DC_TC_EN_ATS;
-	if (ep->pri_enabled)
-		val |= RISCV_IOMMU_DC_TC_EN_PRI;
+// this should be done after SVA.BIND
+//	if (ep->pasid_enabled)
+//		val |= RISCV_IOMMU_DC_TC_EN_ATS | RISCV_IOMMU_DC_TC_EN_PRI;
 	dc->tc = cpu_to_le64(val);
 	wmb();
 	ep->dc = dc;
@@ -1587,7 +1587,7 @@ static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 
 	if (!iommu_domain || !iommu_domain->mm)
 		return -EINVAL;
-	if (!ep || !ep->sva_supported)
+	if (!ep || !ep->pasid_enabled)
 		return -ENODEV;
 	if (!pc)
 		pc = (struct riscv_iommu_pc *)get_zeroed_page(GFP_KERNEL);
@@ -1617,7 +1617,7 @@ static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 			  FIELD_PREP(RISCV_IOMMU_DC_FSC_MODE, RISCV_IOMMU_DC_FSC_PDTP_MODE_PD8));
 		/* XXX: What is (1ULL << 32) ? it's in the custom region */
 		dc->tc = cpu_to_le64(RISCV_IOMMU_DC_TC_PDTV |
-			 (ep->ats_enabled ? RISCV_IOMMU_DC_TC_EN_ATS : 0) |
+			 (ep->pasid_enabled ? RISCV_IOMMU_DC_TC_EN_ATS : 0) |
 			 RISCV_IOMMU_DC_TC_V | (1ULL << 32));
 		ep->pc = pc;
 		wmb();
@@ -1719,7 +1719,7 @@ static void riscv_iommu_flush_iotlb_range(struct iommu_domain *iommu_domain,
 
 	// ATS invalidation for every device and for every translation
 	list_for_each_entry(endpoint, &domain->endpoints, domains) {
-		if (!endpoint->ats_enabled)
+		if (!endpoint->pasid_enabled)
 			continue;
 
 		riscv_iommu_cmd_ats_inval(&cmd);
