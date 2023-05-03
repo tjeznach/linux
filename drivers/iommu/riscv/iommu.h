@@ -143,12 +143,7 @@ struct riscv_iommu_endpoint {
 	/* end point info bits */
 	unsigned pasid_bits;
 	unsigned pasid_feat;
-	unsigned pri_supported:1;
-	unsigned sva_supported:1;
-	unsigned pri_enabled:1;
-	unsigned ats_enabled:1;
-	unsigned pasid_enabled:1;
-
+	bool pasid_enabled;
 };
 
 /* Helper functions and macros */
