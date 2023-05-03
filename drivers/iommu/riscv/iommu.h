@@ -130,7 +130,7 @@ struct riscv_iommu_endpoint {
 
 	struct mutex lock;
 
-	struct riscv_iommu_device *iommu;	/* -> iommu (virtual, collection of) */
+	struct riscv_iommu_device *iommu;	/* -> parent iommu device */
 	struct riscv_iommu_domain *domain;	/* -> attached domain, only one at a time, nesting via domain->domain */
 	struct list_head domains;		/* -> collection of endpoints attached to the same domain */
 	struct rb_node node;    		/* -> iommu-device lookup by devid */

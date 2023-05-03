@@ -737,7 +737,7 @@ static void riscv_iommu_add_device(struct riscv_iommu_device *iommu,
 	struct riscv_iommu_endpoint *ep, *rb_ep;
 	struct rb_node **new_node, *parent_node = NULL;
 
-	lockdep_assert_held(&iommu->eps_mutex);
+	mutex_lock(&iommu->eps_mutex);
 
 	ep = dev_iommu_priv_get(dev);
 
@@ -757,10 +757,12 @@ static void riscv_iommu_add_device(struct riscv_iommu_device *iommu,
 
 	rb_link_node(&ep->node, parent_node, new_node);
 	rb_insert_color(&ep->node, &iommu->eps);
+
+	mutex_unlock(&iommu->eps_mutex);
 }
 
 /*
- * Get device reference based on device identifier.
+ * Get device reference based on device identifier (requester id).
  * Decrement reference count with put_device() call.
  */
 static struct device *riscv_iommu_get_device(struct riscv_iommu_device *iommu,
@@ -768,21 +770,24 @@ static struct device *riscv_iommu_get_device(struct riscv_iommu_device *iommu,
 {
 	struct rb_node *node;
 	struct riscv_iommu_endpoint *ep;
+	struct device *dev = NULL;
 
-	lockdep_assert_held(&iommu->eps_mutex);
+	mutex_lock(&iommu->eps_mutex);
 
 	node = iommu->eps.rb_node;
-	while (node) {
+	while (node && !dev) {
 		ep = rb_entry(node, struct riscv_iommu_endpoint, node);
 		if (ep->devid < devid)
 			node = node->rb_right;
 		else if (ep->devid > devid)
 			node = node->rb_left;
 		else
-			return get_device(ep->dev);
+			dev = get_device(ep->dev);
 	}
 
-	return NULL;
+	mutex_unlock(&iommu->eps_mutex);
+
+	return dev;
 }
 
 static int riscv_iommu_ats_prgr(struct device *dev,
@@ -832,10 +837,7 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 
 	event.fault.type = IOMMU_FAULT_PAGE_REQ;
 
-	mutex_lock(&iommu->eps_mutex);
 	dev = riscv_iommu_get_device(iommu, FIELD_GET(RISCV_IOMMU_PREQ_HDR_DID, req->hdr));
-	mutex_unlock(&iommu->eps_mutex);
-
 	if (!dev) {
 		/* TODO: Handle invalid page request */
 		return;
@@ -963,6 +965,8 @@ static void riscv_iommu_enable_ep(struct riscv_iommu_endpoint *ep)
 
 	pdev = to_pci_dev(dev);
 
+	/* TODO: Check IOMMU Capabilities before enabling ATS/PRI/PASID for devices */
+
 	/* ATS Supported? */
 	if (!pci_ats_supported(pdev))
 		return;
@@ -976,9 +980,12 @@ static void riscv_iommu_enable_ep(struct riscv_iommu_endpoint *ep)
 	if (feat < 0)
 		return;
 
-	/* Let's enable PASID/PRI/ATS */
-
 	num = pci_max_pasids(pdev);
+	if (!num) {
+		dev_warn(dev, "Can't enable PASID (num: %d)\n", num);
+		return;
+	}
+
 	rc = pci_enable_pasid(pdev, feat);
 	if (rc) {
 		dev_warn(dev, "Can't enable PASID (rc: %d)\n", rc);
@@ -1108,7 +1115,7 @@ static bool riscv_iommu_capable(struct device *dev, enum iommu_cap cap)
 /// TODO: transition to DC management calls, teardown
 /* Lookup or initialize device directory info structure. */
 static struct riscv_iommu_dc *
-riscv_iommu_get_dc(struct riscv_iommu_device *iommu, u32 devid)
+riscv_iommu_get_dc(struct riscv_iommu_device *iommu, unsigned devid)
 {
 	const bool base_format = !(iommu->cap & RISCV_IOMMU_CAP_MSI_FLAT);
 	unsigned depth = iommu->ddt_mode - RISCV_IOMMU_DDTP_MODE_1LVL;
@@ -1217,8 +1224,6 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	mutex_init(&ep->lock);
 	INIT_LIST_HEAD(&ep->regions);
 	INIT_LIST_HEAD(&ep->regions);
-	ep->iommu = iommu;
-	ep->dev = dev;
 
 	if (dev_is_pci(dev)) {
 		ep->devid = pci_dev_id(to_pci_dev(dev));
@@ -1229,14 +1234,14 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 		ep->domid = 0;
 	}
 
-	dev_iommu_priv_set(dev, ep);
+	ep->iommu = iommu;
+	ep->dev = dev;
+	ep->dc = riscv_iommu_get_dc(iommu, ep->devid);
 
 	dev_info(iommu->dev, "adding device to iommu with devid %i in domain %i\n", ep->devid, ep->domid);
 
-	mutex_lock(&iommu->eps_mutex);
+	dev_iommu_priv_set(dev, ep);
 	riscv_iommu_add_device(iommu, dev);
-	mutex_unlock(&iommu->eps_mutex);
-
 	riscv_iommu_enable_ep(ep);
 
 	return &iommu->iommu;
@@ -1467,15 +1472,11 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
-	struct riscv_iommu_dc *dc;
+	struct riscv_iommu_dc *dc = ep->dc;
 	struct iommu_resv_region *entry;
 	int ret;
 	u64 val;
 	int i;
-
-	dc = riscv_iommu_get_dc(ep->iommu, ep->devid);
-	if (!dc)
-		return -ENOMEM;
 
 	mutex_lock(&domain->lock);
 	mutex_lock(&ep->lock);
@@ -1569,7 +1570,6 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 //		val |= RISCV_IOMMU_DC_TC_EN_ATS | RISCV_IOMMU_DC_TC_EN_PRI;
 	dc->tc = cpu_to_le64(val);
 	wmb();
-	ep->dc = dc;
 	ep->domain = domain;
 
 	// Append the endpoint to the list of endpoints attached to this domain
