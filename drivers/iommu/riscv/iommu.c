@@ -740,12 +740,46 @@ riscv_iommu_find_ep(struct riscv_iommu_device *iommu, unsigned devid)
 	return NULL;
 }
 
+static int riscv_iommu_ats_prgr(struct device *dev,
+				     struct iommu_page_response *msg)
+{
+	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
+	struct riscv_iommu_command cmd;
+	u8 resp_code;
+	unsigned long payload;
+
+	switch(msg->code) {
+		case IOMMU_PAGE_RESP_SUCCESS:
+			resp_code = 0b0000;
+			break;
+		case IOMMU_PAGE_RESP_INVALID:
+			resp_code = 0b0001;
+			break;
+		case IOMMU_PAGE_RESP_FAILURE:
+			resp_code = 0b1111;
+			break;
+	}
+	payload = riscv_iommu_ats_prgr_payload(ep->devid, resp_code, msg->grpid);
+
+	/* ATS Page Request Group Response */
+	riscv_iommu_cmd_ats_prgr(&cmd);
+	riscv_iommu_cmd_ats_set_dseg(&cmd, ep->domid);
+	riscv_iommu_cmd_ats_set_rid(&cmd, ep->devid);
+	if (msg->flags & IOMMU_PAGE_RESP_PASID_VALID)
+		riscv_iommu_cmd_ats_set_pid(&cmd, msg->pasid);
+	riscv_iommu_cmd_ats_set_payload(&cmd, payload);
+	riscv_iommu_post(ep->iommu, &cmd);
+
+	return 0;
+}
+
 static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 				     struct riscv_iommu_pq_record *req)
 {
 	struct iommu_fault_event event = { 0 };
 	struct iommu_fault_page_request *prm = &event.fault.prm;
 	struct riscv_iommu_endpoint *ep;
+	int ret;
 
 	/* Ignore PGR Stop marker. */
 	if ((req->payload & RISCV_IOMMU_PREQ_PAYLOAD_M) == RISCV_IOMMU_PREQ_PAYLOAD_L)
@@ -778,7 +812,19 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 		prm->pasid = FIELD_GET(RISCV_IOMMU_PREQ_HDR_PID, req->hdr);
 	}
 
-	iommu_report_device_fault(ep->dev, &event);
+	ret = iommu_report_device_fault(ep->dev, &event);
+	if (ret) {
+		struct iommu_page_response resp = {
+			.grpid		= prm->grpid,
+			.code		= IOMMU_PAGE_RESP_FAILURE,
+		};
+		if (prm->flags & IOMMU_FAULT_PAGE_RESPONSE_NEEDS_PASID) {
+			resp.flags |= IOMMU_PAGE_RESP_PASID_VALID;
+			resp.pasid = prm->pasid;
+		}
+		riscv_iommu_ats_prgr(ep->dev, &resp);
+	}
+
 	mutex_unlock(&iommu->eps_mutex);
 }
 
@@ -786,10 +832,7 @@ static int riscv_iommu_page_response(struct device *dev,
 				     struct iommu_fault_event *evt,
 				     struct iommu_page_response *msg)
 {
-
-	dev_info(dev, "page response received. code: %d.\n", msg->code);
-	/* TODO: post PRGR message to the IOMMU */
-	return 0;
+	return riscv_iommu_ats_prgr(dev, msg);
 }
 
 /* Page request interface queue primary interrupt handler */
