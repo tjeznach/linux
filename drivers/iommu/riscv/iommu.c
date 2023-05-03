@@ -22,6 +22,7 @@
 #include <linux/completion.h>
 #include <linux/uaccess.h>
 #include <linux/iommu.h>
+#include <linux/irqdomain.h>
 #include <linux/platform_device.h>
 #include <linux/dma-map-ops.h>
 #include <asm/page.h>
@@ -941,6 +942,7 @@ static int riscv_iommu_enable_ir(struct riscv_iommu_endpoint *ep)
 {
 	struct riscv_iommu_device *iommu = ep->iommu;
 	struct iommu_resv_region *entry;
+	struct irq_domain *msi_domain;
 	u64 val;
 	int i;
 
@@ -970,6 +972,12 @@ static int riscv_iommu_enable_ir(struct riscv_iommu_endpoint *ep)
 	ep->dc->msi_addr_mask = cpu_to_le64(255);
 	ep->dc->msi_addr_pattern = cpu_to_le64(RISCV_IMSIC_BASE >> 12);
 	wmb();
+
+	// set msi domain for the device as isolated. hack.
+	msi_domain = dev_get_msi_domain(ep->dev);
+	if (msi_domain) {
+		msi_domain->flags |= IRQ_DOMAIN_FLAG_ISOLATED_MSI;
+	}
 
 	dev_info(ep->dev, "RV-IR enabled\n");
 
