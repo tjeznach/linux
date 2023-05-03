@@ -114,6 +114,7 @@ struct riscv_iommu_domain {
 
 	bool g_stage;
 	struct riscv_iommu_msi_pte *msi_root;	/* INT mapping */
+	struct riscv_iommu_domain *nested;	/* G-Stage protection domain if any */
 
 	unsigned id;		/* GSCID or PSCID */
 	unsigned mode;		/* RIO_ATP_MODE_* enum */
@@ -127,23 +128,25 @@ struct riscv_iommu_endpoint {
 	struct device *dev;			/* owned by a device $dev */
 	unsigned devid;      			/* PCI bus:device:function number */
 	unsigned domid;    			/* PCI domain number, segment */
+	struct rb_node node;    		/* -> iommu-device lookup by devid */
 
 	struct mutex lock;
 
 	struct riscv_iommu_device *iommu;	/* -> parent iommu device */
 	struct riscv_iommu_domain *domain;	/* -> attached domain, only one at a time, nesting via domain->domain */
-	struct list_head domains;		/* -> collection of endpoints attached to the same domain */
-	struct rb_node node;    		/* -> iommu-device lookup by devid */
+	struct riscv_iommu_msi_pte *msi_root;	/* -> interrupt re-mapping */
 
 	struct riscv_iommu_dc *dc;		/* -> device context pointer, can be tracked by iommu->dc(devid) */
 	struct riscv_iommu_pc *pc;		/* -> process context root, can be tracked by iommu->dc(devid)->pc(pasid) */
 
 	struct list_head regions;		// msi list
+	struct list_head domains;		/* -> collection of endpoints attached to the same domain */
 
 	/* end point info bits */
 	unsigned pasid_bits;
 	unsigned pasid_feat;
 	bool pasid_enabled;
+	bool ir_enabled;
 };
 
 /* Helper functions and macros */
