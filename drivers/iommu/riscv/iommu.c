@@ -830,18 +830,19 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 	struct iommu_fault_page_request *prm = &event.fault.prm;
 	int ret;
 	struct device *dev;
+	unsigned devid =  FIELD_GET(RISCV_IOMMU_PREQ_HDR_DID, req->hdr);
 
 	/* Ignore PGR Stop marker. */
 	if ((req->payload & RISCV_IOMMU_PREQ_PAYLOAD_M) == RISCV_IOMMU_PREQ_PAYLOAD_L)
 		return;
 
-	event.fault.type = IOMMU_FAULT_PAGE_REQ;
-
-	dev = riscv_iommu_get_device(iommu, FIELD_GET(RISCV_IOMMU_PREQ_HDR_DID, req->hdr));
+	dev = riscv_iommu_get_device(iommu, devid);
 	if (!dev) {
 		/* TODO: Handle invalid page request */
 		return;
 	}
+
+	event.fault.type = IOMMU_FAULT_PAGE_REQ;
 
 	if (req->payload & RISCV_IOMMU_PREQ_PAYLOAD_L)
 		prm->flags |= IOMMU_FAULT_PAGE_REQUEST_LAST_PAGE;
@@ -935,6 +936,67 @@ static irqreturn_t riscv_iommu_priq_process(int irq, void *data)
 /*********************\
 * Endpoint management *
 \*********************/
+
+static int riscv_iommu_enable_ir(struct riscv_iommu_endpoint *ep)
+{
+	struct riscv_iommu_device *iommu = ep->iommu;
+	struct iommu_resv_region *entry;
+	u64 val;
+	int i;
+
+	/* Initialize MSI remapping */
+	if (!ep->dc || !(iommu->cap & RISCV_IOMMU_CAP_MSI_FLAT))
+		return 0;
+
+	ep->msi_root = (struct riscv_iommu_msi_pte *) get_zeroed_page(GFP_KERNEL);
+	if (!ep->msi_root)
+		return -ENOMEM;
+
+	for (i = 0; i < 256; i++) {
+		// FIXME
+		ep->msi_root[i].pte = pte_val(pfn_pte(phys_to_pfn(RISCV_IMSIC_BASE) + i, __pgprot(_PAGE_WRITE | _PAGE_PRESENT)));
+	}
+
+	// TODO: get from irq_domain data.
+	entry = iommu_alloc_resv_region(RISCV_IMSIC_BASE, PAGE_SIZE * 256, 0,
+					IOMMU_RESV_SW_MSI, GFP_KERNEL);
+	if (entry)
+		list_add_tail(&entry->list, &ep->regions);
+
+	val = virt_to_pfn(ep->msi_root) |
+		FIELD_PREP(RISCV_IOMMU_DC_MSIPTP_MODE, RISCV_IOMMU_DC_MSIPTP_MODE_FLAT);
+	ep->dc->msiptp = cpu_to_le64(val);
+	/* Single page of MSIPTP, 256 IMSIC files */
+	ep->dc->msi_addr_mask = cpu_to_le64(255);
+	ep->dc->msi_addr_pattern = cpu_to_le64(RISCV_IMSIC_BASE >> 12);
+	wmb();
+
+	dev_info(ep->dev, "RV-IR enabled\n");
+
+	ep->ir_enabled = true;
+
+	return 0;
+}
+
+static void riscv_iommu_disable_ir(struct riscv_iommu_endpoint *ep)
+{
+	if (!ep->ir_enabled)
+		return;
+
+	ep->dc->msi_addr_pattern = 0ULL;
+	ep->dc->msi_addr_mask    = 0ULL;
+	ep->dc->msiptp           = 0ULL;
+	wmb();
+
+	// TODO: send MSI invalidate
+
+	dev_info(ep->dev, "RV-IR disabled\n");
+
+	free_pages((unsigned long)ep->msi_root, 0);
+	ep->msi_root = NULL;
+
+	ep->ir_enabled = false;
+}
 
 /* Endpoint features/capabilities */
 static void riscv_iommu_disable_ep(struct riscv_iommu_endpoint *ep)
@@ -1236,6 +1298,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 
 	ep->iommu = iommu;
 	ep->dev = dev;
+	/* Initial DC pointer can be NULL if IOMMU is configured in OFF or BARE mode */
 	ep->dc = riscv_iommu_get_dc(iommu, ep->devid);
 
 	dev_info(iommu->dev, "adding device to iommu with devid %i in domain %i\n", ep->devid, ep->domid);
@@ -1243,6 +1306,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	dev_iommu_priv_set(dev, ep);
 	riscv_iommu_add_device(iommu, dev);
 	riscv_iommu_enable_ep(ep);
+	riscv_iommu_enable_ir(ep);
 
 	return &iommu->iommu;
 }
@@ -1281,13 +1345,20 @@ static void riscv_iommu_release_device(struct device *dev)
 		riscv_iommu_detach_endpoint(ep);
 	}
 
-	riscv_iommu_disable_ep(ep);
-	ep->dc->tc = 0ULL;
-	wmb();
-	ep->dc->fsc = 0ULL;
-	ep->dc->iohgatp = 0ULL;
-	wmb();
+	if (ep->dc) {
+		// this should be already done by domain detach.
+		ep->dc->tc = 0ULL;
+		wmb();
+		ep->dc->fsc = 0ULL;
+		ep->dc->iohgatp = 0ULL;
+		wmb();
+		riscv_iommu_iodir_inv_devid(iommu, ep->devid);
+	}
 
+	riscv_iommu_disable_ir(ep);
+	riscv_iommu_disable_ep(ep);
+
+	/* Remove endpoint from IOMMU tracking structures */
 	mutex_lock(&iommu->eps_mutex);
 	rb_erase(&ep->node, &iommu->eps);
 	mutex_unlock(&iommu->eps_mutex);
@@ -1433,11 +1504,18 @@ static int riscv_iommu_domain_finalize(struct riscv_iommu_domain *domain,
 	geometry->force_aperture = true;
 
 	domain->iommu = iommu;
-	domain->id = iommu_sva_alloc_pscid();
+
 	if (domain->domain.type == IOMMU_DOMAIN_IDENTITY) {
 		domain->mode = RISCV_IOMMU_DC_FSC_MODE_BARE;
 		return 0;
 	}
+
+	/* TODO:
+	 * Implement proper GSCID and PSCID allocator based on
+	 * max allowed identifier widths (16, 20 bit per spec).
+	 * Optional set 1:1 mapping for GSCID:VMID and PSCID:PASID.
+	 */
+	domain->id = iommu_sva_alloc_pscid();
 
 	/* XXX: Fix this for RV32 */
 	domain->mode = satp_mode >> 60;
@@ -1473,10 +1551,11 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
 	struct riscv_iommu_dc *dc = ep->dc;
-	struct iommu_resv_region *entry;
 	int ret;
 	u64 val;
-	int i;
+
+	if (!dc)
+		return -ENODEV;
 
 	mutex_lock(&domain->lock);
 	mutex_lock(&ep->lock);
@@ -1514,60 +1593,19 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain,
 		dc->fsc = cpu_to_le64(riscv_iommu_domain_atp(domain));
 	}
 	wmb();
-
-	/* Initialize MSI remapping */
-	if (!(ep->iommu->cap & RISCV_IOMMU_CAP_MSI_FLAT))
-		goto skip_msiptp;
-
-	/* FIXME: implement remapping device
-
-	this should be done once for endpoint, at first attachement to a domain and or at probe function
-	note for BARE/OFF translation irq_domain has no effect.
-	maybe initial irq_domain should be empty as well?
-	how to pre-allocate large enough MSI window ?
-	 */
-
-	if (domain->msi_root)
-		goto skip_msiptp;
-
-	val = get_zeroed_page(GFP_KERNEL);
-	if (!val) {
-		mutex_unlock(&ep->lock);
-		mutex_unlock(&domain->lock);
-		return -ENOMEM;
-	}
-
-	domain->msi_root = (struct riscv_iommu_msi_pte *)val;
-
-	for (i = 0; i < 256; i++) {
-		domain->msi_root[i].pte =
-		    pte_val(pfn_pte
-			    (phys_to_pfn(RISCV_IMSIC_BASE) + i,
-			     __pgprot(_PAGE_WRITE | _PAGE_PRESENT)));
-	}
-
-	entry = iommu_alloc_resv_region(RISCV_IMSIC_BASE, PAGE_SIZE * 256, 0,
-					IOMMU_RESV_SW_MSI, GFP_KERNEL);
-	if (entry) {
-		list_add_tail(&entry->list, &ep->regions);
-	}
-
-	val = virt_to_pfn(domain->msi_root) |
-	      FIELD_PREP(RISCV_IOMMU_DC_MSIPTP_MODE, RISCV_IOMMU_DC_MSIPTP_MODE_FLAT);
-	dc->msiptp = cpu_to_le64(val);
-
-	/* Single page of MSIPTP, 256 IMSIC files */
-	dc->msi_addr_mask = cpu_to_le64(255);
-	dc->msi_addr_pattern = cpu_to_le64(RISCV_IMSIC_BASE >> 12);
-
- skip_msiptp:
 	/*
 	 * Mark device context as valid, synchronise device context cache.
 	 */
 	val = RISCV_IOMMU_DC_TC_V;
-// this should be done after SVA.BIND
-//	if (ep->pasid_enabled)
-//		val |= RISCV_IOMMU_DC_TC_EN_ATS | RISCV_IOMMU_DC_TC_EN_PRI;
+	if (ep->pasid_enabled)
+		val |= RISCV_IOMMU_DC_TC_EN_ATS | RISCV_IOMMU_DC_TC_EN_PRI;
+
+	/* Enable QEMU custom extension for auto-pri generation */
+	if (ep->pasid_enabled)
+		val |= 1ULL << 32;
+
+	if (ep->iommu->cap & RISCV_IOMMU_CAP_AMO)
+		val |= RISCV_IOMMU_DC_TC_GADE | RISCV_IOMMU_DC_TC_SADE;
 	dc->tc = cpu_to_le64(val);
 	wmb();
 	ep->domain = domain;
@@ -1593,7 +1631,7 @@ static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 
 	if (!iommu_domain || !iommu_domain->mm)
 		return -EINVAL;
-	if (!ep || !ep->pasid_enabled)
+	if (!ep || !ep->pasid_enabled || !dc)
 		return -ENODEV;
 	if (!pc)
 		pc = (struct riscv_iommu_pc *)get_zeroed_page(GFP_KERNEL);
@@ -1609,6 +1647,10 @@ static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 	if (mmu_notifier_register(&domain->mn, mm))
 	    return -ENODEV;
 
+	// lock ENDPOINT here!
+
+	mutex_lock(&domain->lock);
+
 	/* Use PASID for PSCID tag */
 	pc[pasid].ta = cpu_to_le64(FIELD_PREP(RISCV_IOMMU_PC_TA_PSCID, pasid) |
 		       RISCV_IOMMU_PC_TA_V);
@@ -1621,10 +1663,7 @@ static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 		pc[0].fsc = dc->fsc;
 		dc->fsc = cpu_to_le64(virt_to_pfn(pc) |
 			  FIELD_PREP(RISCV_IOMMU_DC_FSC_MODE, RISCV_IOMMU_DC_FSC_PDTP_MODE_PD8));
-		/* XXX: What is (1ULL << 32) ? it's in the custom region */
-		dc->tc = cpu_to_le64(RISCV_IOMMU_DC_TC_PDTV |
-			 (ep->pasid_enabled ? RISCV_IOMMU_DC_TC_EN_ATS : 0) |
-			 RISCV_IOMMU_DC_TC_V | (1ULL << 32));
+		dc->tc |= cpu_to_le64(RISCV_IOMMU_DC_TC_PDTV | RISCV_IOMMU_DC_TC_DPE);
 		ep->pc = pc;
 		wmb();
 
@@ -1635,6 +1674,7 @@ static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 		riscv_iommu_iodir_inv_pasid(ep->iommu, ep->devid, pasid);
 	}
 
+	mutex_unlock(&domain->lock);
 	riscv_iommu_iofence_sync(ep->iommu);
 
 	return 0;
