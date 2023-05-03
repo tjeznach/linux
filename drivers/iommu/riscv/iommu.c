@@ -728,28 +728,9 @@ static irqreturn_t riscv_iommu_fltq_process(int irq, void *data)
 * Page request queue, chapter 3.3 *
 \*********************************/
 
-static struct device *riscv_iommu_get_device(struct riscv_iommu_device *iommu,
-					     unsigned devid)
-{
-	struct rb_node *node;
-	struct riscv_iommu_endpoint *ep;
-
-	lockdep_assert_held(&iommu->eps_mutex);
-
-	node = iommu->eps.rb_node;
-	while (node) {
-		ep = rb_entry(node, struct riscv_iommu_endpoint, node);
-		if (ep->devid < devid)
-			node = node->rb_right;
-		else if (ep->devid > devid)
-			node = node->rb_left;
-		else
-			return get_device(ep->dev);
-	}
-
-	return NULL;
-}
-
+/*
+ * Register device for IOMMU tracking.
+ */
 static void riscv_iommu_add_device(struct riscv_iommu_device *iommu,
 				   struct device *dev)
 {
@@ -776,6 +757,32 @@ static void riscv_iommu_add_device(struct riscv_iommu_device *iommu,
 
 	rb_link_node(&ep->node, parent_node, new_node);
 	rb_insert_color(&ep->node, &iommu->eps);
+}
+
+/*
+ * Get device reference based on device identifier.
+ * Decrement reference count with put_device() call.
+ */
+static struct device *riscv_iommu_get_device(struct riscv_iommu_device *iommu,
+					     unsigned devid)
+{
+	struct rb_node *node;
+	struct riscv_iommu_endpoint *ep;
+
+	lockdep_assert_held(&iommu->eps_mutex);
+
+	node = iommu->eps.rb_node;
+	while (node) {
+		ep = rb_entry(node, struct riscv_iommu_endpoint, node);
+		if (ep->devid < devid)
+			node = node->rb_right;
+		else if (ep->devid > devid)
+			node = node->rb_left;
+		else
+			return get_device(ep->dev);
+	}
+
+	return NULL;
 }
 
 static int riscv_iommu_ats_prgr(struct device *dev,
@@ -928,15 +935,14 @@ static irqreturn_t riscv_iommu_priq_process(int irq, void *data)
 \*********************/
 
 /* Endpoint features/capabilities */
-static void riscv_iommu_disable_pci_ep(struct device *dev)
+static void riscv_iommu_disable_ep(struct riscv_iommu_endpoint *ep)
 {
 	struct pci_dev *pdev;
-	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
 
-	if (!dev_is_pci(dev))
+	if (!dev_is_pci(ep->dev))
 		return;
 
-	pdev = to_pci_dev(dev);
+	pdev = to_pci_dev(ep->dev);
 
 	if (ep->pasid_enabled) {
 		pci_disable_ats(pdev);
@@ -946,11 +952,11 @@ static void riscv_iommu_disable_pci_ep(struct device *dev)
 	}
 }
 
-static void riscv_iommu_enable_pci_ep(struct device *dev)
+static void riscv_iommu_enable_ep(struct riscv_iommu_endpoint *ep)
 {
 	int rc, feat, num;
 	struct pci_dev *pdev;
-	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
+	struct device *dev = ep->dev;
 
 	if (!dev_is_pci(dev))
 		return;
@@ -1006,7 +1012,7 @@ static void riscv_iommu_enable_pci_ep(struct device *dev)
 	ep->pasid_feat = feat;
 	ep->pasid_bits = ilog2(num);
 
-	dev_info(dev, "PASID/ATS support enabled, %d bits\n", ep->pasid_bits);
+	dev_info(ep->dev, "PASID/ATS support enabled, %d bits\n", ep->pasid_bits);
 }
 
 static int riscv_iommu_enable_sva(struct device *dev)
@@ -1101,8 +1107,8 @@ static bool riscv_iommu_capable(struct device *dev, enum iommu_cap cap)
 
 /// TODO: transition to DC management calls, teardown
 /* Lookup or initialize device directory info structure. */
-static struct riscv_iommu_dc *riscv_iommu_get_dc(struct riscv_iommu_device
-						 *iommu, u32 devid)
+static struct riscv_iommu_dc *
+riscv_iommu_get_dc(struct riscv_iommu_device *iommu, u32 devid)
 {
 	const bool base_format = !(iommu->cap & RISCV_IOMMU_CAP_MSI_FLAT);
 	unsigned depth = iommu->ddt_mode - RISCV_IOMMU_DDTP_MODE_1LVL;
@@ -1223,15 +1229,15 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 		ep->domid = 0;
 	}
 
-	dev_info(iommu->dev, "adding device to iommu with devid %i in domain %i\n", ep->devid, ep->domid);
-
 	dev_iommu_priv_set(dev, ep);
+
+	dev_info(iommu->dev, "adding device to iommu with devid %i in domain %i\n", ep->devid, ep->domid);
 
 	mutex_lock(&iommu->eps_mutex);
 	riscv_iommu_add_device(iommu, dev);
 	mutex_unlock(&iommu->eps_mutex);
 
-	riscv_iommu_enable_pci_ep(dev);
+	riscv_iommu_enable_ep(ep);
 
 	return &iommu->iommu;
 }
@@ -1270,7 +1276,7 @@ static void riscv_iommu_release_device(struct device *dev)
 		riscv_iommu_detach_endpoint(ep);
 	}
 
-	riscv_iommu_disable_pci_ep(dev);
+	riscv_iommu_disable_ep(ep);
 	ep->dc->tc = 0ULL;
 	wmb();
 	ep->dc->fsc = 0ULL;
