@@ -1703,8 +1703,6 @@ static void riscv_iommu_flush_iotlb_range(struct iommu_domain *iommu_domain,
 		riscv_iommu_cmd_inval_set_pscid(&cmd, domain->id);
 	if (domain->g_stage)
 		riscv_iommu_cmd_inval_set_gscid(&cmd, domain->id);
-	else if (domain->nested)
-		riscv_iommu_cmd_inval_set_gscid(&cmd, domain->nested->id);
 
 	if (start && end && pgsize) {
 		// Cover only the range that is needed
