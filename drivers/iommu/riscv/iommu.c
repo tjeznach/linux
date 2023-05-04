@@ -1697,12 +1697,13 @@ static void riscv_iommu_flush_iotlb_range(struct iommu_domain *iommu_domain,
 		payload = riscv_iommu_ats_inval_all_payload(true);
 	}
 
-	riscv_iommu_cmd_inval_vma(&cmd);
-
-	if (!domain->g_stage)
-		riscv_iommu_cmd_inval_set_pscid(&cmd, domain->id);
-	if (domain->g_stage)
+	if (domain->g_stage) {
+		riscv_iommu_cmd_inval_gvma(&cmd);
 		riscv_iommu_cmd_inval_set_gscid(&cmd, domain->id);
+	} else {
+		riscv_iommu_cmd_inval_vma(&cmd);
+		riscv_iommu_cmd_inval_set_pscid(&cmd, domain->id);
+	}
 
 	if (start && end && pgsize) {
 		// Cover only the range that is needed
