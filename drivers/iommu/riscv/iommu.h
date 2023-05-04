@@ -113,8 +113,7 @@ struct riscv_iommu_domain {
 	/* remove: could be a list of iommus */
 	struct riscv_iommu_device *iommu;
 
-	bool g_stage;				/* TODO: convert to domain-mode ? */
-	struct riscv_iommu_domain *nested;	/* G-Stage protection domain if any */
+	bool g_stage;
 	struct riscv_iommu_msi_pte *msi_root;	/* INT mapping */
 
 	unsigned id;		/* GSCID or PSCID */
