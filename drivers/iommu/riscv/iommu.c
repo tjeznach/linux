@@ -1586,9 +1586,9 @@ static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 		dc->fsc = cpu_to_le64(virt_to_pfn(pc) |
 			  FIELD_PREP(RISCV_IOMMU_DC_FSC_MODE, RISCV_IOMMU_DC_FSC_PDTP_MODE_PD8));
 		/* XXX: What is (1ULL << 32) ? it's in the custom region */
-		/* TODO: EN_ATS only for eps that support ATS */
 		dc->tc = cpu_to_le64(RISCV_IOMMU_DC_TC_PDTV |
-			 RISCV_IOMMU_DC_TC_EN_ATS | RISCV_IOMMU_DC_TC_V | (1ULL << 32));
+			 (ep->ats_enabled ? RISCV_IOMMU_DC_TC_EN_ATS : 0) |
+			 RISCV_IOMMU_DC_TC_V | (1ULL << 32));
 		ep->pc = pc;
 		wmb();
 
