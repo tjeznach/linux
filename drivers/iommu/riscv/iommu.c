@@ -569,6 +569,7 @@ static void riscv_iommu_mm_invalidate(struct mmu_notifier *mn,
 	struct riscv_iommu_command cmd;
 	struct riscv_iommu_endpoint *endpoint;
 	struct riscv_iommu_domain *domain = container_of(mn, struct riscv_iommu_domain, mn);
+	unsigned long iova;
 	/*
 	 * The mm_types defines vm_end as the first byte after the end address,
 	 * different from IOMMU subsystem using the last address of an address
@@ -576,11 +577,20 @@ static void riscv_iommu_mm_invalidate(struct mmu_notifier *mn,
 	 */
 	unsigned long payload = riscv_iommu_ats_inval_payload(start, end - 1, true);
 
-	/* TODO: cleanup GSCID/PSCID passing, IOVA range flush */
+	/* TODO: cleanup GSCID/PSCID passing */
 	riscv_iommu_cmd_inval_vma(&cmd);
 	riscv_iommu_cmd_inval_set_gscid(&cmd, 0);
 	riscv_iommu_cmd_inval_set_pscid(&cmd, domain->pscid);
-	riscv_iommu_post(domain->iommu, &cmd);
+	if (end > start) {
+		// Cover only the range that is needed
+		for (iova = start; iova < end; iova += PAGE_SIZE) {
+			riscv_iommu_cmd_inval_set_addr(&cmd, iova);
+			riscv_iommu_post(domain->iommu, &cmd);
+		}
+	} else {
+		riscv_iommu_post(domain->iommu, &cmd);
+	}
+
 	riscv_iommu_iofence_sync(domain->iommu);
 
 	// ATS invalidation for every device and for specific translation range.
