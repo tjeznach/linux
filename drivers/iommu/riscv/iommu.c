@@ -955,8 +955,9 @@ static int riscv_iommu_enable_ir(struct riscv_iommu_endpoint *ep)
 		return -ENOMEM;
 
 	for (i = 0; i < 256; i++) {
-		// FIXME
-		ep->msi_root[i].pte = pte_val(pfn_pte(phys_to_pfn(RISCV_IMSIC_BASE) + i, __pgprot(_PAGE_WRITE | _PAGE_PRESENT)));
+		ep->msi_root[i].pte = RISCV_IOMMU_MSI_PTE_V |
+				      FIELD_PREP(RISCV_IOMMU_MSI_PTE_M, 3) |
+				      phys_to_ppn(RISCV_IMSIC_BASE + i * PAGE_SIZE);
 	}
 
 	// TODO: get from irq_domain data.
