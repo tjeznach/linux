@@ -1134,11 +1134,11 @@ static ioasid_t iommu_sva_alloc_pscid(void)
 {
 	/* TODO: Provide anonymous pasid value */
 	struct mm_struct mm = {
-		.pasid = INVALID_IOASID,
+		.pasid = IOMMU_PASID_INVALID,
 	};
 
 	if (iommu_sva_alloc_pasid(&mm, 1, (1 << 20) - 1))
-		return INVALID_IOASID;
+		return IOMMU_PASID_INVALID;
 
 	return mm.pasid;
 }
