@@ -853,7 +853,7 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 		prm->perm |= IOMMU_FAULT_PERM_READ;
 
 	prm->grpid = FIELD_GET(RISCV_IOMMU_PREQ_PRG_INDEX, req->payload);
-	prm->addr = FIELD_GET(RISCV_IOMMU_PREQ_UADDR, req->payload);
+	prm->addr = FIELD_GET(RISCV_IOMMU_PREQ_UADDR, req->payload) << PAGE_SHIFT;
 
 	if (req->hdr & RISCV_IOMMU_PREQ_HDR_PV) {
 		prm->flags |= IOMMU_FAULT_PAGE_REQUEST_PASID_VALID;
