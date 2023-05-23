@@ -101,7 +101,7 @@ static int riscv_iommu_pci_init(struct pci_dev *pdev)
 
 	if (iommu->cap & RISCV_IOMMU_CAP_HPM) {
 		iommu->irq_pm = msi_get_virq(dev, RISCV_IOMMU_INTR_PM);
-		if (!iommu->irq_cmdq) {
+		if (!iommu->irq_pm) {
 			dev_warn(dev, "no MSI vector %d for performance monitoring\n",
 				 RISCV_IOMMU_INTR_PM);
 			goto fail;
