@@ -1441,6 +1441,7 @@ static struct iommu_domain *riscv_iommu_domain_alloc(unsigned type)
 	mutex_init(&domain->lock);
 	INIT_LIST_HEAD(&domain->endpoints);
 	domain->domain.ops = &riscv_iommu_domain_ops;
+	domain->mode = RISCV_IOMMU_DC_FSC_MODE_BARE;
 
 	return &domain->domain;
 }
@@ -1514,10 +1515,8 @@ static int riscv_iommu_domain_finalize(struct riscv_iommu_domain *domain,
 
 	domain->iommu = iommu;
 
-	if (domain->domain.type == IOMMU_DOMAIN_IDENTITY) {
-		domain->mode = RISCV_IOMMU_DC_FSC_MODE_BARE;
+	if (domain->domain.type == IOMMU_DOMAIN_IDENTITY)
 		return 0;
-	}
 
 	/* TODO:
 	 * Implement proper GSCID and PSCID allocator based on
@@ -1746,6 +1745,12 @@ static void riscv_iommu_flush_iotlb_range(struct iommu_domain *iommu_domain,
 	struct riscv_iommu_endpoint *endpoint;
 	unsigned long iova;
 	unsigned long payload;
+
+        if (domain->mode == RISCV_IOMMU_DC_FSC_MODE_BARE)
+            return;
+
+        /* Domain not attached to an IOMMU? */
+        BUG_ON(!domain->iommu);
 
 	if (start && end) {
 		payload = riscv_iommu_ats_inval_payload(*start, *end, true);
