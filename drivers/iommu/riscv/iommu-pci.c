@@ -4,6 +4,8 @@
  * Copyright © 2022-2023 Rivos Inc.
  * Copyright © 2023 FORTH-ICS/CARV
  *
+ * RISCV IOMMU as a PCIe device
+ *
  * Authors
  *	Tomasz Jeznach <tjeznach@rivosinc.com>
  *	Nick Kossifidis <mick@ics.forth.gr>
@@ -19,9 +21,6 @@
 
 #include "iommu.h"
 
-#define DRV_NAME       "riscv-iommu-pci"
-#define DRV_VERSION    "0.0.9"
-
 /* Rivos Inc. assigned PCI Vendor and Device IDs */
 #ifndef PCI_VENDOR_ID_RIVOS
 #define PCI_VENDOR_ID_RIVOS             0x1efd
@@ -31,57 +30,67 @@
 #define PCI_DEVICE_ID_RIVOS_IOMMU       0xedf1
 #endif
 
-/* RISCV IOMMU as a PCIe device */
-static int riscv_iommu_pci_init(struct pci_dev *pdev)
+static int riscv_iommu_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct device *dev = &pdev->dev;
-	struct riscv_iommu_device *iommu = NULL;
-	u64 icvec = 0;
-	size_t reg_size = 0;
-	int ret = 0;
+	struct riscv_iommu_device *iommu;
+	u64 icvec;
+	int ret;
 
-	iommu = devm_kzalloc(dev, sizeof(*iommu), GFP_KERNEL);
-	if (!iommu)
-		return -ENOMEM;
-
-	iommu->dev = dev;
-
-	ret = pci_request_mem_regions(pdev, DRV_NAME);
+	ret = pci_enable_device_mem(pdev);
 	if (ret < 0)
 		return ret;
 
-	if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM))
-		return -ENODEV;
+	ret = pci_request_mem_regions(pdev, KBUILD_MODNAME);
+	if (ret < 0)
+		goto fail;
 
-	reg_size = pci_resource_len(pdev, 0);
-	if (reg_size < RISCV_IOMMU_REG_SIZE)
-		return -ENODEV;
+	ret = -ENOMEM;
+
+	iommu = devm_kzalloc(dev, sizeof(*iommu), GFP_KERNEL);
+	if (!iommu)
+		goto fail;
+
+	if (!(pci_resource_flags(pdev, 0) & IORESOURCE_MEM))
+		goto fail;
+
+	if (pci_resource_len(pdev, 0) < RISCV_IOMMU_REG_SIZE)
+		goto fail;
 
 	iommu->reg_phys = pci_resource_start(pdev, 0);
 	if (!iommu->reg_phys)
-		return -ENODEV;
-
-	iommu->reg = ioremap(iommu->reg_phys, reg_size);
-	if (!iommu->reg) {
-		dev_err(dev, "unable to map hardware register region\n");
-		ret = -ENOMEM;
 		goto fail;
-	}
 
+	iommu->reg = devm_ioremap(dev, iommu->reg_phys, RISCV_IOMMU_REG_SIZE);
+	if (!iommu->reg)
+		goto fail;
+
+	iommu->dev = dev;
+	dev_set_drvdata(dev, iommu);
+
+	/* Check device reported capabilities. */
 	iommu->cap = riscv_iommu_readq(iommu, RISCV_IOMMU_REG_CAP);
 
 	/* The PCI driver only uses MSIs, make sure the IOMMU supports this */
-	ret = FIELD_GET(RISCV_IOMMU_CAP_IGS, iommu->cap);
-	if (ret == RISCV_IOMMU_CAP_IGS_WSI) {
-		dev_err(dev, "IOMMU only supports wire-signaled interrupts\n");
+	switch (FIELD_GET(RISCV_IOMMU_CAP_IGS, iommu->cap)) {
+	case RISCV_IOMMU_CAP_IGS_MSI:
+	case RISCV_IOMMU_CAP_IGS_BOTH:
+		break;
+	default:
+		dev_err(dev, "unable to use message-signaled interrupts\n");
 		ret = -ENODEV;
 		goto fail;
 	}
 
+	dma_set_mask_and_coherent(dev, DMA_BIT_MASK(64));
+	pci_set_master(pdev);
+
 	/* Allocate and assign IRQ vectors for the various events */
 	ret = pci_alloc_irq_vectors(pdev, 1, RISCV_IOMMU_INTR_COUNT, PCI_IRQ_MSIX);
-	if (ret < 0)
-		return ret;
+	if (ret < 0) {
+		dev_err(dev, "unable to allocate irq vectors\n");
+		goto fail;
+	}
 
 	ret = -ENODEV;
 
@@ -102,7 +111,8 @@ static int riscv_iommu_pci_init(struct pci_dev *pdev)
 	if (iommu->cap & RISCV_IOMMU_CAP_HPM) {
 		iommu->irq_pm = msi_get_virq(dev, RISCV_IOMMU_INTR_PM);
 		if (!iommu->irq_pm) {
-			dev_warn(dev, "no MSI vector %d for performance monitoring\n",
+			dev_warn(dev,
+				 "no MSI vector %d for performance monitoring\n",
 				 RISCV_IOMMU_INTR_PM);
 			goto fail;
 		}
@@ -111,7 +121,8 @@ static int riscv_iommu_pci_init(struct pci_dev *pdev)
 	if (iommu->cap & RISCV_IOMMU_CAP_ATS) {
 		iommu->irq_priq = msi_get_virq(dev, RISCV_IOMMU_INTR_PQ);
 		if (!iommu->irq_priq) {
-			dev_warn(dev, "no MSI vector %d for page-request queue\n",
+			dev_warn(dev,
+				 "no MSI vector %d for page-request queue\n",
 				 RISCV_IOMMU_INTR_PQ);
 			goto fail;
 		}
@@ -119,7 +130,7 @@ static int riscv_iommu_pci_init(struct pci_dev *pdev)
 
 	/* Set simple 1:1 mapping for MSI vectors */
 	icvec = FIELD_PREP(RISCV_IOMMU_IVEC_CIV, RISCV_IOMMU_INTR_CQ) |
-		FIELD_PREP(RISCV_IOMMU_IVEC_FIV, RISCV_IOMMU_INTR_FQ);
+	    FIELD_PREP(RISCV_IOMMU_IVEC_FIV, RISCV_IOMMU_INTR_FQ);
 
 	if (iommu->cap & RISCV_IOMMU_CAP_HPM)
 		icvec |= FIELD_PREP(RISCV_IOMMU_IVEC_PMIV, RISCV_IOMMU_INTR_PM);
@@ -129,43 +140,22 @@ static int riscv_iommu_pci_init(struct pci_dev *pdev)
 
 	riscv_iommu_writel(iommu, RISCV_IOMMU_REG_IVEC, icvec);
 
-	ret = riscv_iommu_init_common(iommu);
+	ret = riscv_iommu_init(iommu);
 	if (!ret)
 		return ret;
+
  fail:
- 	if (iommu->reg)
- 		iounmap(iommu->reg);
- 	if (iommu)
- 		kfree(iommu);
- 	return ret;
-}
-
-static int riscv_iommu_pci_probe(struct pci_dev *pdev,
-				 const struct pci_device_id *ent)
-{
-	int ret;
-
-	ret = pci_enable_device_mem(pdev);
-	if (ret < 0)
-		return ret;
-
-	pci_set_master(pdev);
-
-	ret = riscv_iommu_pci_init(pdev);
-	if (ret < 0) {
-		pci_free_irq_vectors(pdev);
-		pci_clear_master(pdev);
-		pci_release_regions(pdev);
-		pci_disable_device(pdev);
-		return ret;
-	}
-
-	return 0;
+	pci_free_irq_vectors(pdev);
+	pci_clear_master(pdev);
+	pci_release_regions(pdev);
+	pci_disable_device(pdev);
+	/* Note: devres_release_all() will release iommu and iommu->reg */
+	return ret;
 }
 
 static void riscv_iommu_pci_remove(struct pci_dev *pdev)
 {
-	riscv_iommu_remove(&pdev->dev);
+	riscv_iommu_remove(dev_get_drvdata(&pdev->dev));
 	pci_free_irq_vectors(pdev);
 	pci_clear_master(pdev);
 	pci_release_regions(pdev);
@@ -174,18 +164,18 @@ static void riscv_iommu_pci_remove(struct pci_dev *pdev)
 
 static int riscv_iommu_suspend(struct device *dev)
 {
-	/* TODO: Silence IOMMU translations. */
-	return 0;
+	dev_warn(dev, "RISC-V IOMMU PM not implemented");
+	return -ENODEV;
 }
 
 static int riscv_iommu_resume(struct device *dev)
 {
-	/* TODO: Restore IOMMU state. */
-	return 0;
+	dev_warn(dev, "RISC-V IOMMU PM not implemented");
+	return -ENODEV;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(riscv_iommu_pm_ops,
-				riscv_iommu_suspend, riscv_iommu_resume);
+static DEFINE_SIMPLE_DEV_PM_OPS(riscv_iommu_pm_ops, riscv_iommu_suspend,
+				riscv_iommu_resume);
 
 static const struct pci_device_id riscv_iommu_pci_tbl[] = {
 	{PCI_VENDOR_ID_RIVOS, PCI_DEVICE_ID_RIVOS_IOMMU,
@@ -203,7 +193,7 @@ static const struct of_device_id riscv_iommu_of_match[] = {
 MODULE_DEVICE_TABLE(of, riscv_iommu_of_match);
 
 static struct pci_driver riscv_iommu_pci_driver = {
-	.name = DRV_NAME,
+	.name = KBUILD_MODNAME,
 	.id_table = riscv_iommu_pci_tbl,
 	.probe = riscv_iommu_pci_probe,
 	.remove = riscv_iommu_pci_remove,
@@ -213,15 +203,4 @@ static struct pci_driver riscv_iommu_pci_driver = {
 		   },
 };
 
-static int __init riscv_iommu_init_module(void)
-{
-	return pci_register_driver(&riscv_iommu_pci_driver);
-}
-
-static void __exit riscv_iommu_cleanup_module(void)
-{
-	pci_unregister_driver(&riscv_iommu_pci_driver);
-}
-
-module_init(riscv_iommu_init_module);
-module_exit(riscv_iommu_cleanup_module);
+module_driver(riscv_iommu_pci_driver, pci_register_driver, pci_unregister_driver);

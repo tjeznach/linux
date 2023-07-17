@@ -29,6 +29,7 @@ static int riscv_iommu_platform_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	iommu->dev = dev;
+	dev_set_drvdata(dev, iommu);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res) {
@@ -38,7 +39,8 @@ static int riscv_iommu_platform_probe(struct platform_device *pdev)
 
 	iommu->reg = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(iommu->reg)) {
-		ret = dev_err_probe(dev, PTR_ERR(iommu->reg), "could not map register region\n");
+		ret = dev_err_probe(dev, PTR_ERR(iommu->reg),
+				    "could not map register region\n");
 		goto fail;
 	};
 
@@ -48,12 +50,13 @@ static int riscv_iommu_platform_probe(struct platform_device *pdev)
 
 	/* Sanity check: Did we get the whole register space ? */
 	if ((res->end - res->start + 1) < RISCV_IOMMU_REG_SIZE) {
-		dev_err(dev, "device region smaller than register file (0x%llx)\n", res->end - res->start);
+		dev_err(dev, "device region smaller than register file (0x%llx)\n",
+			res->end - res->start);
 		goto fail;
 	}
 
 	iommu->cap = riscv_iommu_readq(iommu, RISCV_IOMMU_REG_CAP);
-		
+
 	/* For now we only support WSIs until we have AIA support */
 	ret = FIELD_GET(RISCV_IOMMU_CAP_IGS, iommu->cap);
 	if (ret == RISCV_IOMMU_CAP_IGS_MSI) {
@@ -118,19 +121,16 @@ static int riscv_iommu_platform_probe(struct platform_device *pdev)
 
 	dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 
-	return riscv_iommu_init_common(iommu);
+	return riscv_iommu_init(iommu);
 
  fail:
-	/* Node iommu->reg will be unmapped devres_release_all so we don't unmap it here */
- 	if (iommu)
- 		kfree(iommu);
+	/* Note: devres_release_all() will release iommu and iommu->reg */
 	return ret;
 };
 
-
-static int riscv_iommu_platform_remove(struct platform_device *pdev)
+static void riscv_iommu_platform_remove(struct platform_device *pdev)
 {
-	return 0;
+	riscv_iommu_remove(dev_get_drvdata(&pdev->dev));
 };
 
 static void riscv_iommu_platform_shutdown(struct platform_device *pdev)
@@ -138,23 +138,23 @@ static void riscv_iommu_platform_shutdown(struct platform_device *pdev)
 	return;
 };
 
-
 static const struct of_device_id riscv_iommu_of_match[] = {
-	{ .compatible = "riscv,iommu", },
-	{ },
+	{.compatible = "riscv,iommu",},
+	{},
 };
+
 MODULE_DEVICE_TABLE(of, riscv_iommu_of_match);
 
-
 static struct platform_driver riscv_iommu_platform_driver = {
-	.driver	= {
-		.name			= "riscv,iommu",
-		.of_match_table		= riscv_iommu_of_match,
-		.suppress_bind_attrs	= true,
-	},
-	.probe	= riscv_iommu_platform_probe,
-	.remove	= riscv_iommu_platform_remove,
+	.driver = {
+		   .name = "riscv,iommu",
+		   .of_match_table = riscv_iommu_of_match,
+		   .suppress_bind_attrs = true,
+		   },
+	.probe = riscv_iommu_platform_probe,
+	.remove_new = riscv_iommu_platform_remove,
 	.shutdown = riscv_iommu_platform_shutdown,
 };
+
 module_driver(riscv_iommu_platform_driver, platform_driver_register,
 	      platform_driver_unregister);

@@ -2,11 +2,11 @@
 /*
  * Copyright © 2022-2023 Rivos Inc.
  * Copyright © 2023 FORTH-ICS/CARV
- * Copyright © 2023, RISC-V IOMMU Task Group
+ * Copyright © 2023 RISC-V IOMMU Task Group
  *
  * RISC-V Ziommu - Register Layout and Data Structures.
  *
- * Based on the IOMMU spec version 1.0, 3/2023
+ * Based on the IOMMU spec version 1.0, 7/2023
  * https://github.com/riscv-non-isa/riscv-iommu
  *
  */
@@ -17,10 +17,10 @@
 #include <linux/types.h>
 #include <linux/bitfield.h>
 #include <linux/bits.h>
- 
-/*********************************************\
-* Chapter 5: Memory Mapped register interface *
-\*********************************************/
+
+/*
+ * Chapter 5: Memory Mapped register interface
+ */
 
 /* Common field positions */
 #define RISCV_IOMMU_PPN_FIELD		GENMASK(53, 10)
@@ -65,24 +65,22 @@
 /**
  * enum riscv_iommu_igs_settings - Interrupt Generation Support Settings
  * @RISCV_IOMMU_CAP_IGS_MSI: I/O MMU supports only MSI generation
- * @RISCV_IOMMU_CAP_IGS_WSI: I/O MMU supports only Wired-Signaled interrupt generation
+ * @RISCV_IOMMU_CAP_IGS_WSI: I/O MMU supports only Wired-Signaled interrupt
  * @RISCV_IOMMU_CAP_IGS_BOTH: I/O MMU supports both MSI and WSI generation
  * @RISCV_IOMMU_CAP_IGS_RSRV: Reserved for standard use
  */
 enum riscv_iommu_igs_settings {
-	RISCV_IOMMU_CAP_IGS_MSI	= 0,
-	RISCV_IOMMU_CAP_IGS_WSI	= 1,
+	RISCV_IOMMU_CAP_IGS_MSI = 0,
+	RISCV_IOMMU_CAP_IGS_WSI = 1,
 	RISCV_IOMMU_CAP_IGS_BOTH = 2,
 	RISCV_IOMMU_CAP_IGS_RSRV = 3
 };
-
 
 /* 5.4 Features control register (32bits) */
 #define RISCV_IOMMU_REG_FCTL		0x0008
 #define RISCV_IOMMU_FCTL_BE		BIT(0)
 #define RISCV_IOMMU_FCTL_WSI		BIT(1)
 #define RISCV_IOMMU_FCTL_GXL		BIT(2)
-
 
 /* 5.5 Device-directory-table pointer (64bits) */
 #define RISCV_IOMMU_REG_DDTP		0x0010
@@ -107,7 +105,6 @@ enum riscv_iommu_ddtp_modes {
 	RISCV_IOMMU_DDTP_MODE_MAX = 4
 };
 
-
 /* 5.6 Command Queue Base (64bits) */
 #define RISCV_IOMMU_REG_CQB		0x0018
 #define RISCV_IOMMU_CQB_ENTRIES		RISCV_IOMMU_QUEUE_SIZE_FIELD
@@ -120,7 +117,6 @@ enum riscv_iommu_ddtp_modes {
 /* 5.8 Command Queue tail (32bits) */
 #define RISCV_IOMMU_REG_CQT		0x0024
 #define RISCV_IOMMU_CQT_INDEX		RISCV_IOMMU_QUEUE_INDEX_FIELD
-
 
 /* 5.9 Fault Queue Base (64bits) */
 #define RISCV_IOMMU_REG_FQB		0x0028
@@ -135,7 +131,6 @@ enum riscv_iommu_ddtp_modes {
 #define RISCV_IOMMU_REG_FQT		0x0034
 #define RISCV_IOMMU_FQT_INDEX		RISCV_IOMMU_QUEUE_INDEX_FIELD
 
-
 /* 5.12 Page Request Queue base (64bits) */
 #define RISCV_IOMMU_REG_PQB		0x0038
 #define RISCV_IOMMU_PQB_ENTRIES		RISCV_IOMMU_QUEUE_SIZE_FIELD
@@ -149,7 +144,6 @@ enum riscv_iommu_ddtp_modes {
 #define RISCV_IOMMU_REG_PQT		0x0044
 #define RISCV_IOMMU_PQT_INDEX_MASK	RISCV_IOMMU_QUEUE_INDEX_FIELD
 
-
 /* 5.15 Command Queue CSR (32bits) */
 #define RISCV_IOMMU_REG_CQCSR		0x0048
 #define RISCV_IOMMU_CQCSR_CQEN		RISCV_IOMMU_QUEUE_ENABLE
@@ -161,7 +155,6 @@ enum riscv_iommu_ddtp_modes {
 #define RISCV_IOMMU_CQCSR_CQON		RISCV_IOMMU_QUEUE_ACTIVE
 #define RISCV_IOMMU_CQCSR_BUSY		RISCV_IOMMU_QUEUE_BUSY
 
-
 /* 5.16 Fault Queue CSR (32bits) */
 #define RISCV_IOMMU_REG_FQCSR		0x004C
 #define RISCV_IOMMU_FQCSR_FQEN		RISCV_IOMMU_QUEUE_ENABLE
@@ -170,7 +163,6 @@ enum riscv_iommu_ddtp_modes {
 #define RISCV_IOMMU_FQCSR_FWOF		RISCV_IOMMU_QUEUE_OVERFLOW
 #define RISCV_IOMMU_FQCSR_FQON		RISCV_IOMMU_QUEUE_ACTIVE
 #define RISCV_IOMMU_FQCSR_BUSY		RISCV_IOMMU_QUEUE_BUSY
-
 
 /* 5.17 Page Request Queue CSR (32bits) */
 #define RISCV_IOMMU_REG_PQCSR		0x0050
@@ -181,7 +173,6 @@ enum riscv_iommu_ddtp_modes {
 #define RISCV_IOMMU_FQCSR_FQON		RISCV_IOMMU_QUEUE_ACTIVE
 #define RISCV_IOMMU_FQCSR_BUSY		RISCV_IOMMU_QUEUE_BUSY
 
-
 /* 5.18 Interrupt Pending Status (32bits) */
 #define RISCV_IOMMU_REG_IPSR		0x0054
 #define RISCV_IOMMU_IPSR_CIP		BIT(0)
@@ -189,7 +180,6 @@ enum riscv_iommu_ddtp_modes {
 #define	RISCV_IOMMU_IPSR_PMIP		BIT(2)
 #define RISCV_IOMMU_IPSR_PIP		BIT(3)
 #define RISCV_IOMMU_INTR_COUNT		4
-
 
 /* 5.19 Performance monitoring counter overflow status (32bits) */
 #define RISCV_IOMMU_REG_IOCOUNTOVF	0x0058
@@ -222,7 +212,6 @@ enum riscv_iommu_ddtp_modes {
 #define RISCV_IOMMU_IOHPMEVT_IDT	BIT_ULL(62)
 #define RISCV_IOMMU_IOHPMEVT_OF		BIT_ULL(63)
 
-
 /* 5.24 Translation request IOVA (64bits) */
 #define RISCV_IOMMU_REG_TR_REQ_IOVA     0x0258
 #define RISCV_IOMMU_TR_REQ_IOVA_VPN	GENMASK(63, 12)
@@ -244,14 +233,12 @@ enum riscv_iommu_ddtp_modes {
 #define RISCV_IOMMU_TR_RESPONSE_SZ	BIT_ULL(9)
 #define RISCV_IOMMU_TR_RESPONSE_PPN	RISCV_IOMMU_PPN_FIELD
 
-
 /* 5.27 Interrupt cause to vector (64bits) */
 #define RISCV_IOMMU_REG_IVEC		0x02F8
 #define RISCV_IOMMU_IVEC_CIV		GENMASK(3, 0)
 #define RISCV_IOMMU_IVEC_FIV		GENMASK(7, 4)
 #define RISCV_IOMMU_IVEC_PMIV		GENMASK(11, 8)
 #define RISCV_IOMMU_IVEC_PIV		GENMASK(15,12)
-
 
 /* 5.28 MSI Configuration table (32 * 64bits) */
 #define RISCV_IOMMU_REG_MSI_CONFIG	0x0300
@@ -262,12 +249,11 @@ enum riscv_iommu_ddtp_modes {
 #define RISCV_IOMMU_REG_MSI_VEC_CTL(_n)	(RISCV_IOMMU_REG_MSI_CONFIG + (_n * 0x10) + 0x0C)
 #define RISCV_IOMMU_MSI_VEC_CTL_M	BIT_ULL(0)
 
-
 #define RISCV_IOMMU_REG_SIZE	0x1000
 
-/****************************\
-* Chapter 2: Data structures *
-\****************************/
+/*
+ * Chapter 2: Data structures
+ */
 
 /*
  * Device Directory Table macros for non-leaf nodes
@@ -326,7 +312,7 @@ struct riscv_iommu_dc {
  * enum riscv_iommu_dc_iohgatp_modes - Guest address translation/protection modes
  * @RISCV_IOMMU_DC_IOHGATP_MODE_BARE: No translation/protection
  * @RISCV_IOMMU_DC_IOHGATP_MODE_SV32X4: Sv32x4 (2-bit extension of Sv32), when fctl.GXL == 1
- * @RISCV_IOMMU_DC_IOHGATP_MODE_SV39X4: Sv39x4 (2-bit extension of Sv39), when fctl.GXL == 0 
+ * @RISCV_IOMMU_DC_IOHGATP_MODE_SV39X4: Sv39x4 (2-bit extension of Sv39), when fctl.GXL == 0
  * @RISCV_IOMMU_DC_IOHGATP_MODE_SV48X4: Sv48x4 (2-bit extension of Sv48), when fctl.GXL == 0
  * @RISCV_IOMMU_DC_IOHGATP_MODE_SV57X4: Sv57x4 (2-bit extension of Sv57), when fctl.GXL == 0
  */
@@ -385,7 +371,6 @@ enum riscv_iommu_dc_fsc_atp_modes {
 /* MSI address pattern */
 #define RISCV_IOMMU_DC_MSI_PATTERN	GENMASK(51, 0)
 
-
 /**
  * struct riscv_iommu_pc - Process Context
  * @ta: Translation Attributes
@@ -409,10 +394,9 @@ struct riscv_iommu_pc {
 #define RISCV_IOMMU_PC_FSC_PPN	GENMASK(43, 0)
 #define RISCV_IOMMU_PC_FSC_MODE	GENMASK(63, 60)
 
-
-/**************************************\
-* Chapter 3: In-memory queue interface *
-\**************************************/
+/*
+ * Chapter 3: In-memory queue interface
+ */
 
 /**
  * struct riscv_iommu_cmd - Generic I/O MMU command structure
@@ -496,7 +480,6 @@ struct riscv_iommu_command {
 #define RISCV_IOMMU_CMD_ATS_PRGR_RESP_CODE	GENMASK(47, 44)
 #define RISCV_IOMMU_CMD_ATS_PRGR_DST_ID		GENMASK(63, 48)
 
-
 /**
  * struct riscv_iommu_fq_record - Fault/Event Queue Record
  * @hdr: Header, includes fault/event cause, PID/DID, transaction type etc
@@ -558,41 +541,41 @@ struct riscv_iommu_fq_record {
  * @RISCV_IOMMU_FQ_CAUSE_INTERNAL_DP_ERROR: Internal data path error
  * @RISCV_IOMMU_FQ_CAUSE_MSI_WR_FAULT: IOMMU MSI write access fault
  * @RISCV_IOMMU_FQ_CAUSE_PT_CORRUPTED: First/second stage page table data corruption
- * 
+ *
  * Values are on table 11 of the spec, encodings 275 - 2047 are reserved for standard
  * use, and 2048 - 4095 for custom use.
  */
 enum riscv_iommu_fq_causes {
-	RISCV_IOMMU_FQ_CAUSE_INST_FAULT		= 1,
-	RISCV_IOMMU_FQ_CAUSE_RD_ADDR_MISALIGNED	= 4,
-	RISCV_IOMMU_FQ_CAUSE_RD_FAULT		= 5,
-	RISCV_IOMMU_FQ_CAUSE_WR_ADDR_MISALIGNED	= 6,
-	RISCV_IOMMU_FQ_CAUSE_WR_FAULT		= 7,
-	RISCV_IOMMU_FQ_CAUSE_INST_FAULT_S	= 12,
-	RISCV_IOMMU_FQ_CAUSE_RD_FAULT_S		= 13,
-	RISCV_IOMMU_FQ_CAUSE_WR_FAULT_S		= 15,
-	RISCV_IOMMU_FQ_CAUSE_INST_FAULT_VS	= 20,
-	RISCV_IOMMU_FQ_CAUSE_RD_FAULT_VS	= 21,
-	RISCV_IOMMU_FQ_CAUSE_WR_FAULT_VS	= 23,
-	RISCV_IOMMU_FQ_CAUSE_DMA_DISABLED	= 256,
-	RISCV_IOMMU_FQ_CAUSE_DDT_LOAD_FAULT	= 257,
-	RISCV_IOMMU_FQ_CAUSE_DDT_INVALID	= 258,
-	RISCV_IOMMU_FQ_CAUSE_DDT_MISCONFIGURED	= 259,
-	RISCV_IOMMU_FQ_CAUSE_TTYPE_BLOCKED	= 260,
-	RISCV_IOMMU_FQ_CAUSE_MSI_LOAD_FAULT	= 261,
-	RISCV_IOMMU_FQ_CAUSE_MSI_INVALID	= 262,
-	RISCV_IOMMU_FQ_CAUSE_MSI_MISCONFIGURED	= 263,
-	RISCV_IOMMU_FQ_CAUSE_MRIF_FAULT		= 264,
-	RISCV_IOMMU_FQ_CAUSE_PDT_LOAD_FAULT	= 265,
-	RISCV_IOMMU_FQ_CAUSE_PDT_INVALID	= 266,
-	RISCV_IOMMU_FQ_CAUSE_PDT_MISCONFIGURED	= 267,
-	RISCV_IOMMU_FQ_CAUSE_DDT_CORRUPTED	= 268,
-	RISCV_IOMMU_FQ_CAUSE_PDT_CORRUPTED	= 269,
-	RISCV_IOMMU_FQ_CAUSE_MSI_PT_CORRUPTED	= 270,
-	RISCV_IOMMU_FQ_CAUSE_MRIF_CORRUIPTED	= 271,
-	RISCV_IOMMU_FQ_CAUSE_INTERNAL_DP_ERROR	= 272,
-	RISCV_IOMMU_FQ_CAUSE_MSI_WR_FAULT	= 273,
-	RISCV_IOMMU_FQ_CAUSE_PT_CORRUPTED	= 274
+	RISCV_IOMMU_FQ_CAUSE_INST_FAULT = 1,
+	RISCV_IOMMU_FQ_CAUSE_RD_ADDR_MISALIGNED = 4,
+	RISCV_IOMMU_FQ_CAUSE_RD_FAULT = 5,
+	RISCV_IOMMU_FQ_CAUSE_WR_ADDR_MISALIGNED = 6,
+	RISCV_IOMMU_FQ_CAUSE_WR_FAULT = 7,
+	RISCV_IOMMU_FQ_CAUSE_INST_FAULT_S = 12,
+	RISCV_IOMMU_FQ_CAUSE_RD_FAULT_S = 13,
+	RISCV_IOMMU_FQ_CAUSE_WR_FAULT_S = 15,
+	RISCV_IOMMU_FQ_CAUSE_INST_FAULT_VS = 20,
+	RISCV_IOMMU_FQ_CAUSE_RD_FAULT_VS = 21,
+	RISCV_IOMMU_FQ_CAUSE_WR_FAULT_VS = 23,
+	RISCV_IOMMU_FQ_CAUSE_DMA_DISABLED = 256,
+	RISCV_IOMMU_FQ_CAUSE_DDT_LOAD_FAULT = 257,
+	RISCV_IOMMU_FQ_CAUSE_DDT_INVALID = 258,
+	RISCV_IOMMU_FQ_CAUSE_DDT_MISCONFIGURED = 259,
+	RISCV_IOMMU_FQ_CAUSE_TTYPE_BLOCKED = 260,
+	RISCV_IOMMU_FQ_CAUSE_MSI_LOAD_FAULT = 261,
+	RISCV_IOMMU_FQ_CAUSE_MSI_INVALID = 262,
+	RISCV_IOMMU_FQ_CAUSE_MSI_MISCONFIGURED = 263,
+	RISCV_IOMMU_FQ_CAUSE_MRIF_FAULT = 264,
+	RISCV_IOMMU_FQ_CAUSE_PDT_LOAD_FAULT = 265,
+	RISCV_IOMMU_FQ_CAUSE_PDT_INVALID = 266,
+	RISCV_IOMMU_FQ_CAUSE_PDT_MISCONFIGURED = 267,
+	RISCV_IOMMU_FQ_CAUSE_DDT_CORRUPTED = 268,
+	RISCV_IOMMU_FQ_CAUSE_PDT_CORRUPTED = 269,
+	RISCV_IOMMU_FQ_CAUSE_MSI_PT_CORRUPTED = 270,
+	RISCV_IOMMU_FQ_CAUSE_MRIF_CORRUIPTED = 271,
+	RISCV_IOMMU_FQ_CAUSE_INTERNAL_DP_ERROR = 272,
+	RISCV_IOMMU_FQ_CAUSE_MSI_WR_FAULT = 273,
+	RISCV_IOMMU_FQ_CAUSE_PT_CORRUPTED = 274
 };
 
 /**
@@ -622,7 +605,6 @@ enum riscv_iommu_fq_ttypes {
 	RISCV_IOMMU_FW_TTYPE_PCIE_MSG_REQ = 9,
 };
 
-
 /**
  * struct riscv_iommu_pq_record - PCIe Page Request record
  * @hdr: Header, includes PID, DID etc
@@ -650,10 +632,9 @@ struct riscv_iommu_pq_record {
 #define RISCV_IOMMU_PREQ_PRG_INDEX	GENMASK(11, 3)
 #define RISCV_IOMMU_PREQ_UADDR		GENMASK(63, 12)
 
-
 /**
  * struct riscv_iommu_msi_pte - MSI Page Table Entry
- * @pte: MSI PTE 
+ * @pte: MSI PTE
  * @mrif_info: Memory-resident interrupt file info
  *
  * The MSI Page Table is used for virtualizing MSIs, so that when
@@ -684,6 +665,4 @@ struct riscv_iommu_msi_pte {
 #define RISCV_IOMMU_MSI_MRIF_NPPN	RISCV_IOMMU_PPN_FIELD
 #define RISCV_IOMMU_MSI_MRIF_NID_MSB	BIT_ULL(60)
 
-
-#endif /* _RISCV_IOMMU_BITS_H_ */
-
+#endif				/* _RISCV_IOMMU_BITS_H_ */

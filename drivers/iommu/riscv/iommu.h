@@ -62,7 +62,7 @@ struct riscv_iommu_device {
 
 	/* hardware control register space */
 	void __iomem *reg;
-	u64 reg_phys;
+	resource_size_t reg_phys;
 
 	/* IRQs for the various queues */
 	int irq_cmdq;
@@ -175,8 +175,8 @@ static inline void riscv_iommu_writeq(struct riscv_iommu_device *iommu,
 	writeq_relaxed(val, iommu->reg + offset);
 }
 
-int riscv_iommu_init_common(struct riscv_iommu_device *iommu);
-void riscv_iommu_remove(struct device *dev);
+int riscv_iommu_init(struct riscv_iommu_device *iommu);
+void riscv_iommu_remove(struct riscv_iommu_device *iommu);
 
 int riscv_iommu_sysfs_add(struct riscv_iommu_device *iommu);
 
