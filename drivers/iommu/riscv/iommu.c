@@ -1418,6 +1418,19 @@ static struct iommu_domain *riscv_iommu_domain_alloc(unsigned type)
 	return &domain->domain;
 }
 
+/* mark domain as second-stage translation */
+static int riscv_iommu_enable_nesting(struct iommu_domain *iommu_domain)
+{
+	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
+
+	mutex_lock(&domain->lock);
+	if (list_empty(&domain->endpoints))
+		domain->g_stage = true;
+	mutex_unlock(&domain->lock);
+
+	return domain->g_stage ? 0 : -EBUSY;
+}
+
 static void riscv_iommu_domain_free(struct iommu_domain *iommu_domain)
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
@@ -1433,7 +1446,7 @@ static void riscv_iommu_domain_free(struct iommu_domain *iommu_domain)
 		free_io_pgtable_ops(&domain->pgtbl.ops);
 
 	if (domain->pgd_root)
-		free_pages((unsigned long)domain->pgd_root, 0);
+		free_pages((unsigned long)domain->pgd_root, domain->g_stage ? 2 : 0);
 
 	if ((int)domain->pscid > 0)
 		ida_free(&riscv_iommu_pscids, domain->pscid);
@@ -1483,7 +1496,8 @@ static int riscv_iommu_domain_finalize(struct riscv_iommu_domain *domain,
 
 	/* TODO: Fix this for RV32 */
 	domain->mode = satp_mode >> 60;
-	domain->pgd_root = (pgd_t *) __get_free_pages(GFP_KERNEL | __GFP_ZERO, 0);
+	domain->pgd_root = (pgd_t *) __get_free_pages(GFP_KERNEL | __GFP_ZERO,
+						      domain->g_stage ? 2 : 0);
 
 	if (!domain->pgd_root)
 		return -ENOMEM;
@@ -1499,6 +1513,8 @@ static u64 riscv_iommu_domain_atp(struct riscv_iommu_domain *domain)
 	u64 atp = FIELD_PREP(RISCV_IOMMU_DC_FSC_MODE, domain->mode);
 	if (domain->mode != RISCV_IOMMU_DC_FSC_MODE_BARE)
 		atp |= FIELD_PREP(RISCV_IOMMU_DC_FSC_PPN, virt_to_pfn(domain->pgd_root));
+	if (domain->g_stage)
+		atp |= FIELD_PREP(RISCV_IOMMU_DC_IOHGATP_GSCID, domain->pscid);
 	return atp;
 }
 
@@ -1541,20 +1557,30 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain, struct devi
 	if (!dc)
 		return -ENODEV;
 
-	/*
-	 * S-Stage translation table. G-Stage remains unmodified (BARE).
-	 */
-	val = FIELD_PREP(RISCV_IOMMU_DC_TA_PSCID, domain->pscid);
-
-	if (ep->pasid_enabled) {
-		ep->pc[0].ta = cpu_to_le64(val | RISCV_IOMMU_PC_TA_V);
-		ep->pc[0].fsc = cpu_to_le64(riscv_iommu_domain_atp(domain));
+	if (domain->g_stage) {
+		/*
+		 * Enable G-Stage translation with initial pass-through mode
+		 * for S-Stage. VMM is responsible for more restrictive
+		 * guest VA translation scheme configuration.
+		 */
 		dc->ta = 0;
-		dc->fsc = cpu_to_le64(virt_to_pfn(ep->pc) |
-		    FIELD_PREP(RISCV_IOMMU_DC_FSC_MODE, RISCV_IOMMU_DC_FSC_PDTP_MODE_PD8));
+		dc->fsc = 0ULL; /* RISCV_IOMMU_DC_FSC_MODE_BARE */ ;
+		dc->iohgatp = cpu_to_le64(riscv_iommu_domain_atp(domain));
 	} else {
-		dc->ta = cpu_to_le64(val);
-		dc->fsc = cpu_to_le64(riscv_iommu_domain_atp(domain));
+		/* S-Stage translation table. G-Stage remains unmodified. */
+		if (ep->pasid_enabled) {
+			val = FIELD_PREP(RISCV_IOMMU_DC_TA_PSCID, domain->pscid);
+			ep->pc[0].ta = cpu_to_le64(val | RISCV_IOMMU_PC_TA_V);
+			ep->pc[0].fsc = cpu_to_le64(riscv_iommu_domain_atp(domain));
+			dc->ta = 0;
+			val = FIELD_PREP(RISCV_IOMMU_DC_FSC_MODE,
+					  RISCV_IOMMU_DC_FSC_PDTP_MODE_PD8);
+			dc->fsc = cpu_to_le64(val | virt_to_pfn(ep->pc));
+		} else {
+			val = FIELD_PREP(RISCV_IOMMU_DC_TA_PSCID, domain->pscid);
+			dc->ta = cpu_to_le64(val);
+			dc->fsc = cpu_to_le64(riscv_iommu_domain_atp(domain));
+		}
 	}
 
 	wmb();
@@ -1597,6 +1623,9 @@ static int riscv_iommu_set_dev_pasid(struct iommu_domain *iommu_domain,
 	u64 ta, fsc;
 
 	if (!iommu_domain || !iommu_domain->mm)
+		return -EINVAL;
+
+	if (domain->g_stage)
 		return -EINVAL;
 
 	/* Driver uses TC.DPE mode, PASID #0 is incorrect. */
@@ -1969,6 +1998,7 @@ static const struct iommu_domain_ops riscv_iommu_domain_ops = {
 	.iotlb_sync = riscv_iommu_iotlb_sync,
 	.iotlb_sync_map = riscv_iommu_iotlb_sync_map,
 	.flush_iotlb_all = riscv_iommu_flush_iotlb_all,
+	.enable_nesting = riscv_iommu_enable_nesting,
 };
 
 static const struct iommu_ops riscv_iommu_ops = {

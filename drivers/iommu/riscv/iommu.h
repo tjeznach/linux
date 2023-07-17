@@ -102,8 +102,9 @@ struct riscv_iommu_domain {
 	struct riscv_iommu_device *iommu;
 
 	unsigned mode;		/* RIO_ATP_MODE_* enum */
-	unsigned pscid;		/* RISC-V IOMMU PSCID */
+	unsigned pscid;		/* RISC-V IOMMU PSCID / GSCID */
 	ioasid_t pasid;		/* IOMMU_DOMAIN_SVA: Cached PASID */
+	bool g_stage;		/* 2nd stage translation domain */
 
 	pgd_t *pgd_root;	/* page table root pointer */
 };
