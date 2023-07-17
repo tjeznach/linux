@@ -117,14 +117,17 @@ struct riscv_iommu_endpoint {
 	struct riscv_iommu_dc *dc;		/* device context pointer */
 	struct riscv_iommu_pc *pc;		/* process context root, valid if pasid_enabled is true */
 	struct riscv_iommu_device *iommu;	/* parent iommu device */
+	struct riscv_iommu_msi_pte *msi_root;	/* interrupt re-mapping */
 
 	struct mutex lock;
 	struct list_head domain;		/* endpoint attached managed domain */
+	struct list_head regions;		/* reserved regions, interrupt remapping window */
 
 	/* end point info bits */
 	unsigned pasid_bits;
 	unsigned pasid_feat;
 	bool pasid_enabled;
+	bool ir_enabled;
 };
 
 /* Helper functions and macros */

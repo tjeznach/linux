@@ -61,6 +61,9 @@ MODULE_PARM_DESC(priq_length, "Page request interface queue length.");
 #define RISCV_IOMMU_MAX_PSCID	(1U << 20)
 static DEFINE_IDA(riscv_iommu_pscids);
 
+/* TODO: Enable MSI remapping */
+#define RISCV_IMSIC_BASE	0x28000000
+
 /* 1 second */
 #define RISCV_IOMMU_TIMEOUT	riscv_timebase
 
@@ -932,6 +935,72 @@ static irqreturn_t riscv_iommu_priq_process(int irq, void *data)
  * Endpoint management
  */
 
+static int riscv_iommu_enable_ir(struct riscv_iommu_endpoint *ep)
+{
+	struct riscv_iommu_device *iommu = ep->iommu;
+	struct iommu_resv_region *entry;
+	struct irq_domain *msi_domain;
+	u64 val;
+	int i;
+
+	/* Initialize MSI remapping */
+	if (!ep->dc || !(iommu->cap & RISCV_IOMMU_CAP_MSI_FLAT))
+		return 0;
+
+	ep->msi_root = (struct riscv_iommu_msi_pte *)get_zeroed_page(GFP_KERNEL);
+	if (!ep->msi_root)
+		return -ENOMEM;
+
+	for (i = 0; i < 256; i++) {
+		ep->msi_root[i].pte = RISCV_IOMMU_MSI_PTE_V |
+		    FIELD_PREP(RISCV_IOMMU_MSI_PTE_M, 3) |
+		    phys_to_ppn(RISCV_IMSIC_BASE + i * PAGE_SIZE);
+	}
+
+	entry = iommu_alloc_resv_region(RISCV_IMSIC_BASE, PAGE_SIZE * 256, 0,
+					IOMMU_RESV_SW_MSI, GFP_KERNEL);
+	if (entry)
+		list_add_tail(&entry->list, &ep->regions);
+
+	val = virt_to_pfn(ep->msi_root) |
+	    FIELD_PREP(RISCV_IOMMU_DC_MSIPTP_MODE, RISCV_IOMMU_DC_MSIPTP_MODE_FLAT);
+	ep->dc->msiptp = cpu_to_le64(val);
+
+	/* Single page of MSIPTP, 256 IMSIC files */
+	ep->dc->msi_addr_mask = cpu_to_le64(255);
+	ep->dc->msi_addr_pattern = cpu_to_le64(RISCV_IMSIC_BASE >> 12);
+	wmb();
+
+	/* set msi domain for the device as isolated. hack. */
+	msi_domain = dev_get_msi_domain(ep->dev);
+	if (msi_domain) {
+		msi_domain->flags |= IRQ_DOMAIN_FLAG_ISOLATED_MSI;
+	}
+
+	dev_dbg(ep->dev, "RV-IR enabled\n");
+
+	ep->ir_enabled = true;
+
+	return 0;
+}
+
+static void riscv_iommu_disable_ir(struct riscv_iommu_endpoint *ep)
+{
+	if (!ep->ir_enabled)
+		return;
+
+	ep->dc->msi_addr_pattern = 0ULL;
+	ep->dc->msi_addr_mask = 0ULL;
+	ep->dc->msiptp = 0ULL;
+	wmb();
+
+	dev_dbg(ep->dev, "RV-IR disabled\n");
+
+	free_pages((unsigned long)ep->msi_root, 0);
+	ep->msi_root = NULL;
+	ep->ir_enabled = false;
+}
+
 /* Endpoint features/capabilities */
 static void riscv_iommu_disable_ep(struct riscv_iommu_endpoint *ep)
 {
@@ -1226,6 +1295,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 
 	mutex_init(&ep->lock);
 	INIT_LIST_HEAD(&ep->domain);
+	INIT_LIST_HEAD(&ep->regions);
 
 	if (dev_is_pci(dev)) {
 		ep->devid = pci_dev_id(to_pci_dev(dev));
@@ -1248,6 +1318,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	dev_iommu_priv_set(dev, ep);
 	riscv_iommu_add_device(iommu, dev);
 	riscv_iommu_enable_ep(ep);
+	riscv_iommu_enable_ir(ep);
 
 	return &iommu->iommu;
 }
@@ -1279,6 +1350,7 @@ static void riscv_iommu_release_device(struct device *dev)
 		riscv_iommu_iodir_inv_devid(iommu, ep->devid);
 	}
 
+	riscv_iommu_disable_ir(ep);
 	riscv_iommu_disable_ep(ep);
 
 	/* Remove endpoint from IOMMU tracking structures */
@@ -1301,6 +1373,15 @@ static struct iommu_group *riscv_iommu_device_group(struct device *dev)
 
 static void riscv_iommu_get_resv_regions(struct device *dev, struct list_head *head)
 {
+	struct iommu_resv_region *entry, *new_entry;
+	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
+
+	list_for_each_entry(entry, &ep->regions, list) {
+		new_entry = kmemdup(entry, sizeof(*entry), GFP_KERNEL);
+		if (new_entry)
+			list_add_tail(&new_entry->list, head);
+	}
+
 	iommu_dma_get_resv_regions(dev, head);
 }
 
