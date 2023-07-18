@@ -105,6 +105,7 @@ struct riscv_iommu_endpoint {
 	unsigned devid;      			/* PCI bus:device:function number */
 	unsigned domid;    			/* PCI domain number, segment */
 	struct rb_node node;    		/* device tracking node (lookup by devid) */
+	struct riscv_iommu_dc *dc;		/* device context pointer */
 	struct riscv_iommu_device *iommu;	/* parent iommu device */
 
 	struct mutex lock;
