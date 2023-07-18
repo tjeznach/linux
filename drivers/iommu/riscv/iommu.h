@@ -88,6 +88,7 @@ struct riscv_iommu_device {
 
 struct riscv_iommu_domain {
 	struct iommu_domain domain;
+	struct io_pgtable pgtbl;
 
 	struct list_head endpoints;
 	struct mutex lock;

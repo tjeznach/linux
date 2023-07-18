@@ -807,7 +807,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	/* Initial DC pointer can be NULL if IOMMU is configured in OFF or BARE mode */
 	ep->dc = riscv_iommu_get_dc(iommu, ep->devid);
 
-	dev_info(iommu->dev, "adding device to iommu with devid %i in domain %i\n",
+	dev_dbg(iommu->dev, "adding device to iommu with devid %i in domain %i\n",
 		ep->devid, ep->domid);
 
 	dev_iommu_priv_set(dev, ep);
@@ -874,7 +874,10 @@ static struct iommu_domain *riscv_iommu_domain_alloc(unsigned type)
 {
 	struct riscv_iommu_domain *domain;
 
-	if (type != IOMMU_DOMAIN_IDENTITY &&
+	if (type != IOMMU_DOMAIN_DMA &&
+	    type != IOMMU_DOMAIN_DMA_FQ &&
+	    type != IOMMU_DOMAIN_UNMANAGED &&
+	    type != IOMMU_DOMAIN_IDENTITY &&
 	    type != IOMMU_DOMAIN_BLOCKED)
 		return NULL;
 
@@ -890,7 +893,7 @@ static struct iommu_domain *riscv_iommu_domain_alloc(unsigned type)
 	domain->pscid = ida_alloc_range(&riscv_iommu_pscids, 1,
 					RISCV_IOMMU_MAX_PSCID, GFP_KERNEL);
 
-	printk("domain type %x alloc %u\n", type, domain->pscid);
+	printk("domain alloc %u\n", domain->pscid);
 
 	return &domain->domain;
 }
@@ -902,6 +905,9 @@ static void riscv_iommu_domain_free(struct iommu_domain *iommu_domain)
 	if (!list_empty(&domain->endpoints)) {
 		pr_warn("IOMMU domain is not empty!\n");
 	}
+
+	if (domain->pgtbl.cookie)
+		free_io_pgtable_ops(&domain->pgtbl.ops);
 
 	if (domain->pgd_root)
 		free_pages((unsigned long)domain->pgd_root, 0);
@@ -959,6 +965,9 @@ static int riscv_iommu_domain_finalize(struct riscv_iommu_domain *domain,
 	if (!domain->pgd_root)
 		return -ENOMEM;
 
+	if (!alloc_io_pgtable_ops(RISCV_IOMMU, &domain->pgtbl.cfg, domain))
+		return -ENOMEM;
+
 	return 0;
 }
 
@@ -1006,9 +1015,8 @@ static int riscv_iommu_attach_dev(struct iommu_domain *iommu_domain, struct devi
 		return 0;
 	}
 
-	if (!dc) {
+	if (!dc)
 		return -ENODEV;
-	}
 
 	/*
 	 * S-Stage translation table. G-Stage remains unmodified (BARE).
@@ -1104,12 +1112,11 @@ static int riscv_iommu_map_pages(struct iommu_domain *iommu_domain,
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 
-	if (domain->domain.type == IOMMU_DOMAIN_IDENTITY) {
-		*mapped = pgsize * pgcount;
-		return 0;
-	}
+	if (!domain->pgtbl.ops.map_pages)
+		return -ENODEV;
 
-	return -ENODEV;
+	return domain->pgtbl.ops.map_pages(&domain->pgtbl.ops, iova, phys,
+					   pgsize, pgcount, prot, gfp, mapped);
 }
 
 static size_t riscv_iommu_unmap_pages(struct iommu_domain *iommu_domain,
@@ -1118,10 +1125,11 @@ static size_t riscv_iommu_unmap_pages(struct iommu_domain *iommu_domain,
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 
-	if (domain->domain.type == IOMMU_DOMAIN_IDENTITY)
-		return pgsize * pgcount;
+	if (!domain->pgtbl.ops.unmap_pages)
+		return 0;
 
-	return 0;
+	return domain->pgtbl.ops.unmap_pages(&domain->pgtbl.ops, iova, pgsize,
+					     pgcount, gather);
 }
 
 static phys_addr_t riscv_iommu_iova_to_phys(struct iommu_domain *iommu_domain,
@@ -1129,10 +1137,10 @@ static phys_addr_t riscv_iommu_iova_to_phys(struct iommu_domain *iommu_domain,
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 
-	if (domain->domain.type == IOMMU_DOMAIN_IDENTITY)
-		return (phys_addr_t) iova;
+	if (!domain->pgtbl.ops.iova_to_phys)
+		return 0;
 
-	return 0;
+	return domain->pgtbl.ops.iova_to_phys(&domain->pgtbl.ops, iova);
 }
 
 /*
