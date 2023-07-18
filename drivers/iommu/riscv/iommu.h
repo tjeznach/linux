@@ -17,9 +17,11 @@
 #include <linux/iova.h>
 #include <linux/io.h>
 #include <linux/idr.h>
+#include <linux/mmu_notifier.h>
 #include <linux/list.h>
 #include <linux/iommu.h>
 #include <linux/io-pgtable.h>
+#include <linux/mmu_notifier.h>
 
 #include "iommu-bits.h"
 
@@ -76,6 +78,9 @@ struct riscv_iommu_device {
 	unsigned ddt_mode;
 	bool ddtp_in_iomem;
 
+	/* I/O page fault queue */
+	struct iopf_queue *pq_work;
+
 	/* hardware queues */
 	struct riscv_iommu_queue cmdq;
 	struct riscv_iommu_queue fltq;
@@ -91,11 +96,14 @@ struct riscv_iommu_domain {
 	struct io_pgtable pgtbl;
 
 	struct list_head endpoints;
+	struct list_head notifiers;
 	struct mutex lock;
+	struct mmu_notifier mn;
 	struct riscv_iommu_device *iommu;
 
 	unsigned mode;		/* RIO_ATP_MODE_* enum */
 	unsigned pscid;		/* RISC-V IOMMU PSCID */
+	ioasid_t pasid;		/* IOMMU_DOMAIN_SVA: Cached PASID */
 
 	pgd_t *pgd_root;	/* page table root pointer */
 };
@@ -107,10 +115,16 @@ struct riscv_iommu_endpoint {
 	unsigned domid;    			/* PCI domain number, segment */
 	struct rb_node node;    		/* device tracking node (lookup by devid) */
 	struct riscv_iommu_dc *dc;		/* device context pointer */
+	struct riscv_iommu_pc *pc;		/* process context root, valid if pasid_enabled is true */
 	struct riscv_iommu_device *iommu;	/* parent iommu device */
 
 	struct mutex lock;
 	struct list_head domain;		/* endpoint attached managed domain */
+
+	/* end point info bits */
+	unsigned pasid_bits;
+	unsigned pasid_feat;
+	bool pasid_enabled;
 };
 
 /* Helper functions and macros */
