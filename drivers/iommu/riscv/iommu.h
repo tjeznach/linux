@@ -112,4 +112,6 @@ static inline void riscv_iommu_writeq(struct riscv_iommu_device *iommu,
 int riscv_iommu_init(struct riscv_iommu_device *iommu);
 void riscv_iommu_remove(struct riscv_iommu_device *iommu);
 
+int riscv_iommu_sysfs_add(struct riscv_iommu_device *iommu);
+
 #endif

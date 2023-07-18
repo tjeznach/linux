@@ -608,6 +608,7 @@ static const struct iommu_ops riscv_iommu_ops = {
 void riscv_iommu_remove(struct riscv_iommu_device *iommu)
 {
 	iommu_device_unregister(&iommu->iommu);
+	iommu_device_sysfs_remove(&iommu->iommu);
 	riscv_iommu_enable(iommu, RISCV_IOMMU_DDTP_MODE_OFF);
 }
 
@@ -643,6 +644,12 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 
 	if (ret) {
 		dev_err(dev, "cannot enable iommu device (%d)\n", ret);
+		goto fail;
+	}
+
+	ret = riscv_iommu_sysfs_add(iommu);
+	if (ret) {
+		dev_err(dev, "cannot register sysfs interface (%d)\n", ret);
 		goto fail;
 	}
 
