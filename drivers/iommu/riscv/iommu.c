@@ -2196,3 +2196,12 @@ err_init:
 	riscv_iommu_debugfs_remove(iommu);
 	return rc;
 }
+
+static __init int riscv_iommu_request_acs(void)
+{
+	pci_request_acs();
+
+	return 0;
+}
+
+arch_initcall(riscv_iommu_request_acs);
