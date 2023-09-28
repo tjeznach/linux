@@ -1753,3 +1753,12 @@ err_queue_disable:
 	riscv_iommu_queue_disable(&iommu->cmdq);
 	return rc;
 }
+
+static __init int riscv_iommu_request_acs(void)
+{
+	pci_request_acs();
+
+	return 0;
+}
+
+arch_initcall(riscv_iommu_request_acs);
