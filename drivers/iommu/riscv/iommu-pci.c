@@ -34,6 +34,7 @@ static int riscv_iommu_pci_probe(struct pci_dev *pdev, const struct pci_device_i
 {
 	struct device *dev = &pdev->dev;
 	struct riscv_iommu_device *iommu;
+	struct fwnode_handle *fwnode;
 	int rc, vec;
 
 	rc = pci_enable_device_mem(pdev);
@@ -98,6 +99,16 @@ static int riscv_iommu_pci_probe(struct pci_dev *pdev, const struct pci_device_i
 		iommu->fctl ^= RISCV_IOMMU_FCTL_WSI;
 		riscv_iommu_writel(iommu, RISCV_IOMMU_REG_FCTL, iommu->fctl);
 	}
+
+	/*
+	 * Firmware node device pointer should be updated once device is probed.
+	 * When firmware node is created during ACPI VIOT scan, PCI device object
+	 * does not exist.  We need IOMMU device reference in the iommu_fwnode to
+	 * be valid, as its used device during iommu-bus probes.
+	 */
+	fwnode = dev_fwnode(dev);
+	if (fwnode && !fwnode->dev)
+		fwnode->dev = dev;
 
 	rc = riscv_iommu_init(iommu);
 	if (!rc)
