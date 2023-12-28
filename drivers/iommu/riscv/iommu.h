@@ -16,8 +16,10 @@
 #include <linux/iommu.h>
 #include <linux/types.h>
 #include <linux/iopoll.h>
+#include <linux/mmu_notifier.h>
 
 #include "iommu-bits.h"
+#include "../iommu-sva.h"
 
 struct riscv_iommu_device {
 	/* iommu core interface */
@@ -36,9 +38,22 @@ struct riscv_iommu_device {
 	/* available interrupt numbers, MSI or WSI */
 	unsigned int irqs[RISCV_IOMMU_INTR_COUNT];
 	unsigned int irqs_count;
+	unsigned int ivec;
+
+	/* device directory */
+	unsigned int ddt_mode;
+	dma_addr_t ddt_phys;
+	u64 *ddt_root;
 
 	/* device level debug directory dentry */
 	struct dentry *debugfs;
+};
+
+/* This struct contains device (endpoint) specific IOMMU driver data. */
+struct riscv_iommu_endpoint {
+	unsigned int devid;
+	struct device *dev;
+	u8 attached:1;
 };
 
 int riscv_iommu_init(struct riscv_iommu_device *iommu);
