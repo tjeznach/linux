@@ -109,6 +109,25 @@ static int riscv_iommu_regs_show(struct seq_file *m, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(riscv_iommu_regs);
 
+static int riscv_iommu_queues_show(struct seq_file *m, void *unused)
+{
+	struct riscv_iommu_device *iommu = (struct riscv_iommu_device *)m->private;
+
+	seq_puts(m, "Queue\thead\t\ttail\t\tprod\n");
+	seq_printf(m, "CQ\t0x%08x\t0x%08x\t0x%08x\n",
+		   atomic_read(&iommu->cmdq.head),
+		   atomic_read(&iommu->cmdq.tail),
+		   atomic_read(&iommu->cmdq.prod));
+	seq_printf(m, "FQ\t0x%08x\t0x%08x\t0x%08x\n",
+		   atomic_read(&iommu->fltq.head),
+		   atomic_read(&iommu->fltq.tail),
+		   atomic_read(&iommu->fltq.prod));
+
+	return 0;
+}
+
+DEFINE_SHOW_ATTRIBUTE(riscv_iommu_queues);
+
 #define	MAX_NAME_LEN	64
 
 void riscv_iommu_debugfs_setup(struct riscv_iommu_device *iommu)
@@ -125,6 +144,8 @@ void riscv_iommu_debugfs_setup(struct riscv_iommu_device *iommu)
 
 	debugfs_create_file("regs", 0444, iommu->debugfs, iommu,
 			    &riscv_iommu_regs_fops);
+	debugfs_create_file("queues", 0444, iommu->debugfs, iommu,
+			    &riscv_iommu_queues_fops);
 }
 
 void riscv_iommu_debugfs_remove(struct riscv_iommu_device *iommu)
