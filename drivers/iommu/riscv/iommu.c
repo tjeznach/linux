@@ -33,6 +33,64 @@ MODULE_LICENSE("GPL v2");
 /* Timeouts in [us] */
 #define RISCV_IOMMU_DDTP_TIMEOUT       50000
 
+/* Device resource-managed allocations */
+struct riscv_iommu_devres {
+	unsigned long addr;
+	unsigned int order;
+};
+
+static void riscv_iommu_devres_pages_release(struct device *dev, void *res)
+{
+	struct riscv_iommu_devres *devres = res;
+
+	free_pages(devres->addr, devres->order);
+}
+
+static int riscv_iommu_devres_pages_match(struct device *dev, void *res, void *p)
+{
+	struct riscv_iommu_devres *devres = res;
+	struct riscv_iommu_devres *target = p;
+
+	return devres->addr == target->addr;
+}
+
+static unsigned long riscv_iommu_get_pages(struct riscv_iommu_device *iommu,
+					   unsigned int order)
+{
+	struct riscv_iommu_devres *devres;
+	struct page *pages;
+
+	pages = alloc_pages_node(dev_to_node(iommu->dev),
+				 GFP_KERNEL_ACCOUNT | __GFP_ZERO, order);
+	if (unlikely(!pages)) {
+		dev_err(iommu->dev, "Page allocation failed, order %u\n", order);
+		return 0;
+	}
+
+	devres = devres_alloc(riscv_iommu_devres_pages_release,
+			      sizeof(struct riscv_iommu_devres), GFP_KERNEL);
+
+	if (unlikely(!devres)) {
+		__free_pages(pages, order);
+		return 0;
+	}
+
+	devres->addr = (unsigned long)page_address(pages);
+	devres->order = order;
+
+	devres_add(iommu->dev, devres);
+
+	return devres->addr;
+}
+
+static void riscv_iommu_free_pages(struct riscv_iommu_device *iommu, unsigned long addr)
+{
+	struct riscv_iommu_devres devres = { .addr = addr };
+
+	WARN_ON(devres_release(iommu->dev, riscv_iommu_devres_pages_release,
+			       riscv_iommu_devres_pages_match, &devres));
+}
+
 static int riscv_iommu_attach_identity_domain(struct iommu_domain *domain,
 					      struct device *dev)
 {
