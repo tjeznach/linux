@@ -21,6 +21,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/pci-ats.h>
 
 #include "iommu-bits.h"
 #include "iommu.h"
@@ -1010,6 +1011,7 @@ struct riscv_iommu_domain {
 	struct iommu_domain domain;
 	struct list_head bonds;
 	int pscid;
+	int pasid;
 	int numa_node;
 	int amo_enabled:1;
 	unsigned int pgd_mode;
@@ -1064,11 +1066,47 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 	}
 }
 
+/* TODO: add other PDT levels - autoexpand existing PDT if needed.
+ * convert to API set_pc(iommu, devid, pasid, fsc, pscid) or similar...
+ * allocation for DC should include ep->pasid_supported to construct PDT
+ */
+struct riscv_iommu_pc *riscv_iommu_get_pc(struct riscv_iommu_device *iommu,
+					  struct riscv_iommu_endpoint *ep, int pasid)
+{
+	struct riscv_iommu_dc *dc;
+	unsigned long ptr;
+
+	if (ep->pc)
+		return ep->pc + pasid;
+
+	dc = riscv_iommu_get_dc(iommu, ep->devid);
+	if (!dc)
+		return NULL;
+	if (!ep->pasid_supported)
+		return (struct riscv_iommu_pc *)(&dc->ta);
+	/*
+	 * If PASID is supported, prepare device context with process context tree root,
+	 * enabled DPE and configure paging domain under PASID #0.
+	 */
+	ptr = riscv_iommu_get_pages(iommu, 0);
+	if (!ptr)
+		return NULL;
+
+	dc->fsc = FIELD_PREP(RISCV_IOMMU_DC_FSC_MODE, RISCV_IOMMU_DC_FSC_PDTP_MODE_PD8) |
+		  FIELD_PREP(RISCV_IOMMU_DC_FSC_PPN, virt_to_pfn(ptr));
+	dc->ta = 0;
+	ep->pc = (struct riscv_iommu_pc *)ptr;
+
+	return ep->pc + pasid;
+}
+
 /* Enable PCIe endpoint ATS/PASID/PRI features */
 static void riscv_iommu_enable_pdev(struct pci_dev *pdev)
 {
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(&pdev->dev);
 
+	if (ep->pasid_supported)
+		ep->pasid_enabled = !pci_enable_pasid(pdev, pci_pasid_features(pdev));
 	if (ep->ats_supported)
 		ep->ats_enabled = !pci_enable_ats(pdev, PAGE_SHIFT);
 }
@@ -1081,6 +1119,13 @@ static void riscv_iommu_disable_pdev(struct pci_dev *pdev)
 		pci_disable_ats(pdev);
 		ep->ats_enabled = false;
 	}
+
+	if (ep->pasid_enabled) {
+		pci_disable_pasid(pdev);
+		ep->pasid_enabled = false;
+	}
+}
+
 // lockdep_assert_held(&group->mutex);
 static int riscv_iommu_attach_domain(struct device *dev,
 				     struct iommu_domain *domain)
@@ -1090,22 +1135,27 @@ static int riscv_iommu_attach_domain(struct device *dev,
 	const bool was_attached = ep->attached;
 	bool amo_enabled = false;
 	struct riscv_iommu_dc *dc;
+	struct riscv_iommu_pc *pc;
 	unsigned int pscid = 0;
 	u64 atp, ta, tc;
 
 	if (!domain && !was_attached)
 		return 0;
 
-	/* Find DC for the endpoint */
+	/* Find DC and PC for the endpoint */
 	dc = riscv_iommu_get_dc(iommu, ep->devid);
 	if (!dc)
 		return -ENODEV;
 
-	ta = READ_ONCE(dc->ta);
+	pc = riscv_iommu_get_pc(iommu, ep, 0);
+	if (!pc)
+		return -ENODEV;
+	ta = READ_ONCE(pc->ta);
 	tc = READ_ONCE(dc->tc);
 
 	/* Invalidate last known valid PSCID */
-	if (tc & RISCV_IOMMU_DC_TC_V)
+	if ((tc & RISCV_IOMMU_DC_TC_V) &&
+	    (!ep->pasid_supported || (ta & RISCV_IOMMU_PC_TA_V)))
 		pscid = FIELD_GET(RISCV_IOMMU_DC_TA_PSCID, ta);
 
 	if (!domain) {
@@ -1126,10 +1176,12 @@ static int riscv_iommu_attach_domain(struct device *dev,
 		} else {
 			return -ENODEV;
 		}
-		WRITE_ONCE(dc->fsc, atp);
+		if (ep->pasid_supported)
+			ta |= RISCV_IOMMU_PC_TA_V;
+		WRITE_ONCE(pc->fsc, atp);
 		/* Prevent incomplete PC state being observable */
 		smp_wmb();
-		WRITE_ONCE(dc->ta, ta);
+		WRITE_ONCE(pc->ta, ta);
 	}
 
 	if (!was_attached) {
@@ -1143,8 +1195,10 @@ static int riscv_iommu_attach_domain(struct device *dev,
 			tc |= RISCV_IOMMU_DC_TC_SADE;
 		if (ep->ats_supported)
 			tc |= RISCV_IOMMU_DC_TC_EN_ATS;
+		if (ep->pasid_supported)
+			tc |= RISCV_IOMMU_DC_TC_DPE | RISCV_IOMMU_DC_TC_PDTV;
 
-		/* Prevent incomplete DC state being observable */
+		/* Prevent incomplete DC/PC state being observable */
 		smp_wmb();
 		WRITE_ONCE(dc->tc, tc);
 
@@ -1159,9 +1213,11 @@ static int riscv_iommu_attach_domain(struct device *dev,
 		struct riscv_iommu_queue *cmdq = &iommu->cmdq;
 		struct riscv_iommu_command cmd;
 
-		/* Invalidate device context cache */
+		/* Invalidate device & process context cache */
 		riscv_iommu_cmd_iodir_inval_ddt(&cmd);
 		riscv_iommu_cmd_iodir_set_did(&cmd, ep->devid);
+		if (ep->pasid_supported)
+			riscv_iommu_cmd_iodir_set_pid(&cmd, 0);
 		riscv_iommu_queue_send(cmdq, &cmd, 0);
 
 		/* Invalidate address translation cache for previous domain */
@@ -1620,6 +1676,14 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 			ep->ats_supported = pci_ats_supported(pdev);
 		if (ep->ats_supported)
 			ep->ats_queue_depth = pci_ats_queue_depth(pdev);
+		if (ep->ats_supported && iommu->iommu.max_pasids)
+			ep->pasid_supported = pci_pasid_features(pdev) >= 0;
+		if (ep->pasid_supported)
+			ep->max_pasid = pci_max_pasids(pdev);
+		if (ep->max_pasid <= 0)
+			ep->pasid_supported = false;
+		if (ep->pasid_supported && ep->max_pasid < iommu->iommu.max_pasids)
+			iommu->iommu.max_pasids = ep->max_pasid;
 	}
 
 	dev_iommu_priv_set(dev, ep);
@@ -1695,6 +1759,14 @@ static int riscv_iommu_init_check(struct riscv_iommu_device *iommu)
 		      FIELD_PREP(RISCV_IOMMU_IVEC_PMIV, 2) |
 		      FIELD_PREP(RISCV_IOMMU_IVEC_PIV,  3);
 	riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_IVEC, iommu->ivec);
+
+	/* Check PASID capabilities */
+	if (iommu->caps & RISCV_IOMMU_CAP_PD20)
+		iommu->iommu.max_pasids = 1u << 20;
+	else if (iommu->caps & RISCV_IOMMU_CAP_PD17)
+		iommu->iommu.max_pasids = 1u << 17;
+	else if (iommu->caps & RISCV_IOMMU_CAP_PD8)
+		iommu->iommu.max_pasids = 1u << 8;
 
 	dma_set_mask_and_coherent(iommu->dev,
 				  DMA_BIT_MASK(FIELD_GET(RISCV_IOMMU_CAP_PAS, iommu->caps)));

@@ -79,10 +79,14 @@ struct riscv_iommu_endpoint {
 	unsigned int devid;
 	struct device *dev;
 	struct rb_node eps_node;
+	struct riscv_iommu_pc *pc;
+	int max_pasid;
 	u8 ats_queue_depth;
 	u8 attached:1;
 	u8 ats_supported:1;
 	u8 ats_enabled:1;
+	u8 pasid_supported:1;
+	u8 pasid_enabled:1;
 };
 
 int riscv_iommu_init(struct riscv_iommu_device *iommu);
