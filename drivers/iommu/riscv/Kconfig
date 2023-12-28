@@ -13,3 +13,20 @@ config RISCV_IOMMU
 
 	  Say Y here if your SoC includes an IOMMU device implementing
 	  the RISC-V IOMMU architecture.
+
+if RISCV_IOMMU
+
+config RISCV_IOMMU_DEBUGFS
+	bool "Export RISC-V IOMMU internals in Debugfs"
+	depends on IOMMU_DEBUGFS
+	help
+	  !!!WARNING!!!
+
+	  DO NOT ENABLE THIS OPTION UNLESS YOU REALLY KNOW WHAT YOU ARE DOING!!!
+
+	  Expose RISC-V IOMMU internals in Debugfs.
+
+	  This option is -NOT- intended for production environments, and should
+	  only be enabled for debugging RISC-V IOMMU.
+
+endif # RISCV_IOMMU

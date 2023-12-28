@@ -13,6 +13,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/compiler.h>
+#include <linux/debugfs.h>
 #include <linux/dma-mapping.h>
 #include <linux/init.h>
 #include <linux/iommu.h>
@@ -102,6 +103,7 @@ void riscv_iommu_remove(struct riscv_iommu_device *iommu)
 {
 	iommu_device_unregister(&iommu->iommu);
 	iommu_device_sysfs_remove(&iommu->iommu);
+	riscv_iommu_debugfs_remove(iommu);
 }
 
 static int riscv_iommu_init_check(struct riscv_iommu_device *iommu)
@@ -146,6 +148,8 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_DDTP,
 			   FIELD_PREP(RISCV_IOMMU_DDTP_MODE, RISCV_IOMMU_DDTP_MODE_BARE));
 
+	riscv_iommu_debugfs_setup(iommu);
+
 	rc = iommu_device_sysfs_add(&iommu->iommu, NULL, NULL, "riscv-iommu@%s",
 				    dev_name(iommu->dev));
 	if (WARN(rc, "cannot register sysfs interface\n"))
@@ -160,5 +164,6 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 err_iommu:
 	iommu_device_sysfs_remove(&iommu->iommu);
 err_sysfs:
+	riscv_iommu_debugfs_remove(iommu);
 	return rc;
 }

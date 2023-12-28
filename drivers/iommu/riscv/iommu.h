@@ -36,6 +36,9 @@ struct riscv_iommu_device {
 	/* available interrupt numbers, MSI or WSI */
 	unsigned int irqs[RISCV_IOMMU_INTR_COUNT];
 	unsigned int irqs_count;
+
+	/* device level debug directory dentry */
+	struct dentry *debugfs;
 };
 
 int riscv_iommu_init(struct riscv_iommu_device *iommu);
@@ -60,5 +63,13 @@ void riscv_iommu_remove(struct riscv_iommu_device *iommu);
 #define riscv_iommu_readl_timeout(iommu, addr, val, cond, delay_us, timeout_us) \
 	readx_poll_timeout(readl_relaxed, (iommu)->reg + (addr), val, cond, \
 			   delay_us, timeout_us)
+
+#ifdef CONFIG_RISCV_IOMMU_DEBUGFS
+void riscv_iommu_debugfs_setup(struct riscv_iommu_device *iommu);
+void riscv_iommu_debugfs_remove(struct riscv_iommu_device *iommu);
+#else
+static inline void riscv_iommu_debugfs_setup(struct riscv_iommu_device *) {};
+static inline void riscv_iommu_debugfs_remove(struct riscv_iommu_device *) {};
+#endif
 
 #endif
