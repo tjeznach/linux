@@ -695,6 +695,77 @@ static irqreturn_t riscv_iommu_fltq_process(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+/* Register device for IOMMU device-id based tracking. */
+static void riscv_iommu_add_device(struct device *dev)
+{
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
+	struct riscv_iommu_endpoint *ep, *rb_ep;
+	struct rb_node **new_node, *parent_node = NULL;
+
+	mutex_lock(&iommu->eps_mutex);
+
+	ep = dev_iommu_priv_get(dev);
+
+	new_node = &iommu->eps.rb_node;
+	while (*new_node) {
+		rb_ep = rb_entry(*new_node, struct riscv_iommu_endpoint, eps_node);
+		parent_node = *new_node;
+		if (rb_ep->devid > ep->devid) {
+			new_node = &((*new_node)->rb_left);
+		} else if (rb_ep->devid < ep->devid) {
+			new_node = &((*new_node)->rb_right);
+		} else {
+			mutex_unlock(&iommu->eps_mutex);
+			return;
+		}
+	}
+
+	rb_link_node(&ep->eps_node, parent_node, new_node);
+	rb_insert_color(&ep->eps_node, &iommu->eps);
+
+	mutex_unlock(&iommu->eps_mutex);
+}
+
+/* Remove device from IOMMU tracking structures. */
+static void riscv_iommu_del_device(struct device *dev)
+{
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
+	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
+
+	mutex_lock(&iommu->eps_mutex);
+	rb_erase(&ep->eps_node, &iommu->eps);
+	mutex_unlock(&iommu->eps_mutex);
+}
+
+/*
+ * Get device reference based on device identifier (requester id).
+ * Decrement reference count with put_device() call.
+ */
+static struct device *riscv_iommu_get_device(struct riscv_iommu_device *iommu,
+					     unsigned int devid)
+{
+	struct rb_node *node;
+	struct riscv_iommu_endpoint *ep;
+	struct device *dev = NULL;
+
+	mutex_lock(&iommu->eps_mutex);
+
+	node = iommu->eps.rb_node;
+	while (node && !dev) {
+		ep = rb_entry(node, struct riscv_iommu_endpoint, eps_node);
+		if (ep->devid < devid)
+			node = node->rb_right;
+		else if (ep->devid > devid)
+			node = node->rb_left;
+		else
+			dev = get_device(ep->dev);
+	}
+
+	mutex_unlock(&iommu->eps_mutex);
+
+	return dev;
+}
+
 /* Lookup and initialize device context info structure. */
 static struct riscv_iommu_dc *riscv_iommu_get_dc(struct riscv_iommu_device *iommu,
 						 unsigned int devid)
@@ -1505,6 +1576,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 
 static void riscv_iommu_probe_finalize(struct device *dev)
 {
+	riscv_iommu_add_device(dev);
 	iommu_setup_dma_ops(dev, 0, U64_MAX);
 }
 
@@ -1513,6 +1585,7 @@ static void riscv_iommu_release_device(struct device *dev)
 	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(dev);
 
 	riscv_iommu_attach_domain(dev, NULL);
+	riscv_iommu_del_device(dev);
 	dev_iommu_priv_set(dev, NULL);
 	kfree(ep);
 }
@@ -1582,6 +1655,7 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 
 	RISCV_IOMMU_QUEUE_INIT(&iommu->cmdq, CQ);
 	RISCV_IOMMU_QUEUE_INIT(&iommu->fltq, FQ);
+	mutex_init(&iommu->eps_mutex);
 
 	rc = riscv_iommu_init_check(iommu);
 	if (rc)

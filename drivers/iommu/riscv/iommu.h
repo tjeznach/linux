@@ -66,6 +66,10 @@ struct riscv_iommu_device {
 	dma_addr_t ddt_phys;
 	u64 *ddt_root;
 
+	/* Connected end-points */
+	struct rb_root eps;
+	struct mutex eps_mutex;			/* serialize eps updates */
+
 	/* device level debug directory dentry */
 	struct dentry *debugfs;
 };
@@ -74,6 +78,7 @@ struct riscv_iommu_device {
 struct riscv_iommu_endpoint {
 	unsigned int devid;
 	struct device *dev;
+	struct rb_node eps_node;
 	u8 attached:1;
 };
 
