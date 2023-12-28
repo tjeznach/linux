@@ -1024,12 +1024,14 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 				    unsigned long start, unsigned long end)
 {
 	struct riscv_iommu_bond *bond;
+	struct riscv_iommu_endpoint *ep;
 	struct riscv_iommu_queue *cmdq;
 	struct riscv_iommu_command cmd;
 	unsigned long iova;
 
 	list_for_each_entry(bond, &domain->bonds, bonds) {
 		cmdq = &(dev_to_iommu(bond->endpoint->dev))->cmdq;
+		ep = bond->endpoint;
 
 		riscv_iommu_cmd_inval_vma(&cmd);
 		riscv_iommu_cmd_inval_set_pscid(&cmd, domain->pscid);
@@ -1041,6 +1043,17 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 		} else {
 			riscv_iommu_queue_send(cmdq, &cmd, 0);
 		}
+
+		if (!ep->ats_enabled)
+			continue;
+
+		riscv_iommu_cmd_ats_inval(&cmd);
+		if (end > start)
+			riscv_iommu_cmd_ats_set_range(&cmd, start, end, true);
+		else
+			riscv_iommu_cmd_ats_set_all(&cmd, true);
+		riscv_iommu_cmd_ats_set_devid(&cmd, ep->devid);
+		riscv_iommu_queue_send(cmdq, &cmd, 0);
 	}
 
 	list_for_each_entry(bond, &domain->bonds, bonds) {
@@ -1051,6 +1064,23 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 	}
 }
 
+/* Enable PCIe endpoint ATS/PASID/PRI features */
+static void riscv_iommu_enable_pdev(struct pci_dev *pdev)
+{
+	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(&pdev->dev);
+
+	if (ep->ats_supported)
+		ep->ats_enabled = !pci_enable_ats(pdev, PAGE_SHIFT);
+}
+
+static void riscv_iommu_disable_pdev(struct pci_dev *pdev)
+{
+	struct riscv_iommu_endpoint *ep = dev_iommu_priv_get(&pdev->dev);
+
+	if (ep->ats_enabled) {
+		pci_disable_ats(pdev);
+		ep->ats_enabled = false;
+	}
 // lockdep_assert_held(&group->mutex);
 static int riscv_iommu_attach_domain(struct device *dev,
 				     struct iommu_domain *domain)
@@ -1079,6 +1109,8 @@ static int riscv_iommu_attach_domain(struct device *dev,
 		pscid = FIELD_GET(RISCV_IOMMU_DC_TA_PSCID, ta);
 
 	if (!domain) {
+		if (dev_is_pci(dev))
+			riscv_iommu_disable_pdev(to_pci_dev(dev));
 		WRITE_ONCE(dc->tc, 0);
 		ep->attached = false;
 	} else {
@@ -1109,6 +1141,8 @@ static int riscv_iommu_attach_domain(struct device *dev,
 		tc = RISCV_IOMMU_DC_TC_V;
 		if (amo_enabled)
 			tc |= RISCV_IOMMU_DC_TC_SADE;
+		if (ep->ats_supported)
+			tc |= RISCV_IOMMU_DC_TC_EN_ATS;
 
 		/* Prevent incomplete DC state being observable */
 		smp_wmb();
@@ -1116,6 +1150,9 @@ static int riscv_iommu_attach_domain(struct device *dev,
 
 		/* mark as attached */
 		ep->attached = true;
+
+		if (dev_is_pci(dev))
+			riscv_iommu_enable_pdev(to_pci_dev(dev));
 	}
 
 	if (was_attached) {
@@ -1131,6 +1168,14 @@ static int riscv_iommu_attach_domain(struct device *dev,
 		if (pscid) {
 			riscv_iommu_cmd_inval_vma(&cmd);
 			riscv_iommu_cmd_inval_set_pscid(&cmd, pscid);
+			riscv_iommu_queue_send(cmdq, &cmd, 0);
+		}
+
+		/* Invalidate ATS */
+		if (ep->ats_supported) {
+			riscv_iommu_cmd_ats_inval(&cmd);
+			riscv_iommu_cmd_ats_set_all(&cmd, true);
+			riscv_iommu_cmd_ats_set_devid(&cmd, ep->devid);
 			riscv_iommu_queue_send(cmdq, &cmd, 0);
 		}
 
@@ -1568,6 +1613,14 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 
 	ep->devid = devid;
 	ep->dev = dev;
+	RB_CLEAR_NODE(&ep->eps_node);
+
+	if (pdev) {
+		if (iommu->caps & RISCV_IOMMU_CAP_ATS)
+			ep->ats_supported = pci_ats_supported(pdev);
+		if (ep->ats_supported)
+			ep->ats_queue_depth = pci_ats_queue_depth(pdev);
+	}
 
 	dev_iommu_priv_set(dev, ep);
 
