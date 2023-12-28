@@ -60,6 +60,7 @@ struct riscv_iommu_device {
 	/* hardware queues */
 	struct riscv_iommu_queue cmdq;
 	struct riscv_iommu_queue fltq;
+	struct riscv_iommu_queue priq;
 
 	/* device directory */
 	unsigned int ddt_mode;
@@ -69,6 +70,9 @@ struct riscv_iommu_device {
 	/* Connected end-points */
 	struct rb_root eps;
 	struct mutex eps_mutex;			/* serialize eps updates */
+
+	/* I/O page fault queue */
+	struct iopf_queue *pq_work;
 
 	/* device level debug directory dentry */
 	struct dentry *debugfs;
@@ -87,6 +91,9 @@ struct riscv_iommu_endpoint {
 	u8 ats_enabled:1;
 	u8 pasid_supported:1;
 	u8 pasid_enabled:1;
+	u8 pri_supported:1;
+	u8 pri_enabled:1;
+	u8 pri_pasid_required:1;
 };
 
 int riscv_iommu_init(struct riscv_iommu_device *iommu);
