@@ -570,23 +570,46 @@ static inline void riscv_iommu_cmd_ats_set_pid(struct riscv_iommu_command *cmd,
 	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_ATS_PID, pid) | RISCV_IOMMU_CMD_ATS_PV;
 }
 
+/* Range is [start, end)
+ */
 static inline void riscv_iommu_cmd_ats_set_range(struct riscv_iommu_command *cmd,
 						 unsigned long start, unsigned long end,
 						 bool global_inv)
 {
-	size_t len = end - start + 1;
+	size_t len = __roundup_pow_of_two(end - start + 1);
 	u64 payload = 0;
+
+	if (len < PAGE_SIZE)
+	    len = PAGE_SIZE;
+
+	/* This algorithm finds the smallest power-of-2 span size that
+	 * covers from start to end.
+	 */
+	unsigned long rounded_start = start & ~(len - 1);
+
+	while ((rounded_start + len) <= end) {
+		len *= 2;
+		rounded_start = start & ~(len - 1);
+
+		/* The edge case of len (1<<63) still not covering the
+		 * requested range leads to overflowing the 64b len,
+		 * and is dealt with below as "invalidate all".
+		 */
+		if (len == 0)
+			break;
+	}
 
 	/*
 	 * PCI Express specification
-	 * Section 10.2.3.2 Translation Range Size (S) Field
+	 * Section 10.2.3.2 Translation Range Size (S) Field:
+	 * 'S' is bit 11; if 0, pagesize is 4K.  If 1, pagesize is
+	 * given by position of first 0 in bits [63:12], e.g. 64K has
+	 * [16:12] = 0b01111
 	 */
-	if (len < PAGE_SIZE)
-		len = PAGE_SIZE;
+	if (len)
+		payload = (start & ~(len - 1)) | (((len - 1) >> 12) << 11);
 	else
-		len = __roundup_pow_of_two(len);
-
-	payload = (start & ~(len - 1)) | (((len - 1) >> 12) << 11);
+		payload = GENMASK_ULL(62, 11); /* Invalidate all */
 
 	if (global_inv)
 		payload |= RISCV_IOMMU_CMD_ATS_INVAL_G;
