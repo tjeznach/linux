@@ -2088,12 +2088,13 @@ static int riscv_iommu_init_check(struct riscv_iommu_device *iommu)
 			return -EINVAL;
 	}
 
-	/* Set 1:1 mapping for interrupt vectors if available */
-	iommu->ivec = iommu->irqs_count < 4 ? 0 :
-		      FIELD_PREP(RISCV_IOMMU_IVEC_CIV,  0) |
-		      FIELD_PREP(RISCV_IOMMU_IVEC_FIV,  1) |
-		      FIELD_PREP(RISCV_IOMMU_IVEC_PMIV, 2) |
-		      FIELD_PREP(RISCV_IOMMU_IVEC_PIV,  3);
+	/* Distribute interrupt vectors, always use first vector for CIV */
+	iommu->ivec = 0;
+	if (iommu->irqs_count) {
+		iommu->ivec |= FIELD_PREP(RISCV_IOMMU_IVEC_FIV, 1 % iommu->irqs_count);
+		iommu->ivec |= FIELD_PREP(RISCV_IOMMU_IVEC_PIV, 2 % iommu->irqs_count);
+		iommu->ivec |= FIELD_PREP(RISCV_IOMMU_IVEC_PMIV, 3 % iommu->irqs_count);
+	}
 	riscv_iommu_writeq(iommu, RISCV_IOMMU_REG_IVEC, iommu->ivec);
 
 	/* Check PASID capabilities */
