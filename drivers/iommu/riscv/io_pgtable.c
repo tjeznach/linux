@@ -218,7 +218,7 @@ static phys_addr_t riscv_iommu_iova_to_phys(struct io_pgtable_ops *ops,
 	if (!pte || !pte_present(*pte))
 		return 0;
 
-	return (pfn_to_phys(pte_pfn(*pte)) | (iova & PAGE_MASK));
+	return (pfn_to_phys(pte_pfn(*pte)) | (iova & ~PAGE_MASK));
 }
 
 static void riscv_iommu_tlb_inv_all(void *cookie)
