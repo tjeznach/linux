@@ -500,7 +500,8 @@ static inline void riscv_iommu_cmd_iofence(struct riscv_iommu_command *cmd)
 	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE,
 				 RISCV_IOMMU_CMD_IOFENCE_OPCODE) |
 		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC,
-				 RISCV_IOMMU_CMD_IOFENCE_FUNC_C);
+				 RISCV_IOMMU_CMD_IOFENCE_FUNC_C) |
+		      RISCV_IOMMU_CMD_IOFENCE_PR | RISCV_IOMMU_CMD_IOFENCE_PW;
 	cmd->dword1 = 0;
 }
 
@@ -852,7 +853,8 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 		struct iommu_page_response resp = {
 			.grpid = FIELD_GET(RISCV_IOMMU_PREQ_PRG_INDEX, req->payload),
 			.pasid = FIELD_GET(RISCV_IOMMU_PREQ_HDR_PID, req->hdr),
-			.flags = IOMMU_PAGE_RESP_PASID_VALID,
+			.flags = (prm->flags & IOMMU_FAULT_PAGE_RESPONSE_NEEDS_PASID) ?
+				 IOMMU_PAGE_RESP_PASID_VALID : 0,
 			.code  = IOMMU_PAGE_RESP_FAILURE,
 		};
 		riscv_iommu_page_response(dev, &event, &resp);
