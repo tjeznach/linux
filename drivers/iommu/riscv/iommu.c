@@ -340,59 +340,6 @@ static void riscv_iommu_queue_release(struct riscv_iommu_queue *queue, int count
 	riscv_iommu_writel(queue->iommu, Q_HEAD(queue), Q_ITEM(queue, head));
 }
 
-/*
- * Waits for available producer slot in the queue. MP safe.
- * Returns negative error code in case of timeout.
- * Submission via riscv_iommu_queue_submit() should happen as soon as possible.
- */
-static int riscv_iommu_queue_aquire(struct riscv_iommu_queue *queue, unsigned int *index,
-				    unsigned int timeout_us)
-{
-	unsigned int prod = atomic_fetch_add(1, &queue->prod);
-	unsigned int head = atomic_read(&queue->head);
-
-	*index = prod;
-
-	if ((prod - head) > queue->mask) {
-		/* Wait for queue space availability */
-		if (readx_poll_timeout(atomic_read, &queue->head,
-				       head, (prod - head) < queue->mask, 0, timeout_us))
-			return -EBUSY;
-	} else if ((prod - head) == queue->mask) {
-		/*
-		 * Update consumer shadow index and check reserved register bits are not set,
-		 * and wait for space availability.
-		 */
-		const unsigned int last = Q_ITEM(queue, head);
-
-		if (riscv_iommu_readl_timeout(queue->iommu, Q_HEAD(queue), head,
-					      !(head & ~queue->mask) && head != last,
-					      0, timeout_us))
-			return -EBUSY;
-		atomic_add((head - last) & queue->mask, &queue->head);
-	}
-
-	return 0;
-}
-
-/*
- * Ordered write to producer hardware register.
- * @index should match value allocated by riscv_iommu_queue_aquire() call.
- */
-static int riscv_iommu_queue_submit(struct riscv_iommu_queue *queue, unsigned int index)
-{
-	unsigned int tail;
-
-	if (readx_poll_timeout(atomic_read, &queue->tail, tail, index == tail,
-			       0, RISCV_IOMMU_QUEUE_TIMEOUT))
-		return -EBUSY;
-
-	riscv_iommu_writel(queue->iommu, Q_TAIL(queue), Q_ITEM(queue, index + 1));
-	atomic_inc(&queue->tail);
-
-	return 0;
-}
-
 /* Return actual consumer index based on hardware reported queue head index. */
 static unsigned int riscv_iommu_queue_cons(struct riscv_iommu_queue *queue)
 {
@@ -427,18 +374,61 @@ static int riscv_iommu_queue_send(struct riscv_iommu_queue *queue,
 				  struct riscv_iommu_command *cmd,
 				  unsigned int timeout_us)
 {
-	unsigned int idx;
+	unsigned int prod;
+	unsigned int head;
+	unsigned int tail;
+	unsigned long flags;
 
-	if (WARN_ON(riscv_iommu_queue_aquire(queue, &idx, RISCV_IOMMU_QUEUE_TIMEOUT)))
+	/* 1. Allocate some space in the queue */
+	local_irq_save(flags);
+
+	prod = atomic_inc_return(&queue->prod) - 1;
+	head = atomic_read(&queue->head);
+
+	/* 2. Wait for space availability. TODO rework with simple space-check and poll */
+	if ((prod - head) > queue->mask) {
+		/* Wait for queue space availability */
+		if (readx_poll_timeout(atomic_read, &queue->head,
+				       head, (prod - head) < queue->mask, 0, RISCV_IOMMU_QUEUE_TIMEOUT)) {
+			local_irq_restore(flags);
+			return -EBUSY;
+		}
+	} else if ((prod - head) == queue->mask) {
+		/*
+		 * Update consumer shadow index and check reserved register bits are not set,
+		 * and wait for space availability.
+		 */
+		const unsigned int last = Q_ITEM(queue, head);
+
+		if (riscv_iommu_readl_timeout(queue->iommu, Q_HEAD(queue), head,
+					      !(head & ~queue->mask) && head != last,
+					      0, RISCV_IOMMU_QUEUE_TIMEOUT)) {
+			local_irq_restore(flags);
+			return -EBUSY;
+		}
+		atomic_add((head - last) & queue->mask, &queue->head);
+	}
+
+	/* 3. Insert commands into the ring buffer. */
+	((struct riscv_iommu_command *)queue->base)[Q_ITEM(queue, prod)] = *cmd;
+
+	/* 4. Ensure commands are visible and wait for all previous commands to be ready */
+	dma_wmb();
+
+	if (readx_poll_timeout(atomic_read, &queue->tail, tail, prod == tail,
+			       0, RISCV_IOMMU_QUEUE_TIMEOUT)) {
+		local_irq_restore(flags);
 		return -EBUSY;
+	}
 
-	((struct riscv_iommu_command *)queue->base)[Q_ITEM(queue, idx)] = *cmd;
+	/* 5. Complete sumission and restore local interrupts */
+	riscv_iommu_writel(queue->iommu, Q_TAIL(queue), Q_ITEM(queue, prod + 1));
+	atomic_inc(&queue->tail);
+	local_irq_restore(flags);
 
-	if (WARN_ON(riscv_iommu_queue_submit(queue, idx)))
-		return -EBUSY;
-
+	/* TODO: move outside of submission function */
 	if (timeout_us)
-		return WARN_ON(riscv_iommu_queue_wait(queue, idx, timeout_us));
+		return WARN_ON(riscv_iommu_queue_wait(queue, prod, timeout_us));
 
 	return 0;
 }
