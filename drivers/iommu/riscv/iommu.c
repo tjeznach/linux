@@ -1886,6 +1886,19 @@ static int riscv_iommu_of_xlate(struct device *dev, struct of_phandle_args *args
 	return iommu_fwspec_add_ids(dev, args->args, 1);
 }
 
+static bool riscv_iommu_capable(struct device *dev, enum iommu_cap cap)
+{
+	switch (cap) {
+	case IOMMU_CAP_CACHE_COHERENCY:
+		return true;
+
+	default:
+		break;
+	}
+
+	return false;
+}
+
 static int riscv_iommu_dev_enable_iopf(struct device *dev)
 {
 	struct pci_dev *pdev = dev_is_pci(dev) ? to_pci_dev(dev) : NULL;
@@ -2055,6 +2068,7 @@ static void riscv_iommu_release_device(struct device *dev)
 static const struct iommu_ops riscv_iommu_ops = {
 	.owner = THIS_MODULE,
 	.pgsize_bitmap = SZ_4K | SZ_2M | SZ_1G,
+	.capable = riscv_iommu_capable,
 	.of_xlate = riscv_iommu_of_xlate,
 	.identity_domain = &riscv_iommu_identity_domain,
 	.domain_alloc = riscv_iommu_domain_alloc,
