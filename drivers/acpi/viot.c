@@ -99,6 +99,14 @@ static int __init viot_get_pci_iommu_fwnode(struct viot_iommu *viommu,
 			return -ENOMEM;
 		}
 		set_primary_fwnode(&pdev->dev, fwnode);
+		/*
+		 * FIXME: this should be done via device_add call.
+		 *
+		 * Firmware node device pointer should be updated before device is probed.
+		 * We need IOMMU device reference in the iommu_fwnode to be valid, as its
+		 * used device during iommu-bus probes.
+		 */
+		fwnode->dev = &pdev->dev;
 	}
 	viommu->fwnode = dev_fwnode(&pdev->dev);
 	pci_dev_put(pdev);
