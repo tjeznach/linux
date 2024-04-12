@@ -18975,6 +18975,7 @@ F:	Documentation/devicetree/bindings/iommu/riscv,iommu.yaml
 F:	drivers/iommu/riscv/Kconfig
 F:	drivers/iommu/riscv/Makefile
 F:	drivers/iommu/riscv/iommu-bits.h
+F:	drivers/iommu/riscv/iommu-pci.c
 F:	drivers/iommu/riscv/iommu-platform.c
 F:	drivers/iommu/riscv/iommu.c
 F:	drivers/iommu/riscv/iommu.h
