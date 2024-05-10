@@ -808,4 +808,56 @@ static inline void riscv_iommu_cmd_iodir_set_pid(struct riscv_iommu_command *cmd
 	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD0_IODIR_PID, pasid);
 }
 
+static inline void riscv_iommu_cmd_ats_inval(struct riscv_iommu_command *cmd)
+{
+	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD0_OPCODE, RISCV_IOMMU_CMD_ATS_OPCODE) |
+		      FIELD_PREP(RISCV_IOMMU_CMD0_FUNC, RISCV_IOMMU_CMD_ATS_FUNC_INVAL);
+	cmd->dword1 = 0;
+}
+
+static inline void riscv_iommu_cmd_ats_set_devid(struct riscv_iommu_command *cmd,
+						 unsigned int devid)
+{
+	const unsigned int seg = (devid & 0x0ff0000) >> 16;
+	const unsigned int rid = (devid & 0x000ffff);
+
+	if (seg)
+		cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD0_ATS_DSEG, seg) |
+			       RISCV_IOMMU_CMD0_ATS_DSV;
+	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD0_ATS_RID, rid);
+}
+
+static inline void riscv_iommu_cmd_ats_set_pid(struct riscv_iommu_command *cmd,
+					       unsigned int pid)
+{
+	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD0_ATS_PID, pid) |
+		       RISCV_IOMMU_CMD0_ATS_PV;
+}
+
+/*
+ * Set address for range invalidation following PCI Express specification
+ * Section 10.2.3.2 (similar to NAPOT-encoded address).
+ * Translation Range Size (S) Field 'S' is bit 11; if 0, pagesize is 4K.
+ * If 1, pagesize is given by position of first 0 in bits [63:12],
+ * e.g. 64K has [16:12] = 0b01111
+ *
+ * sz_lg2: log2 of total range in bytes or less than log2(4K) to invalidate all
+ * addr: must be naturally aligned to 2^sz_lg2 if sz_lg2 is non-zero.
+ */
+static inline void riscv_iommu_cmd_ats_set_range(
+	struct riscv_iommu_command *cmd, u64 addr, unsigned int sz_lg2, bool global_inv)
+{
+	u64 payload;
+
+	if (sz_lg2 < 12)
+		payload = GENMASK_ULL(62, 11); /* Invalidate all */
+	else
+		payload = addr | (BIT_U64(sz_lg2 - 12) - 1) << 11;
+
+	if (global_inv)
+		payload |= RISCV_IOMMU_CMD1_ATS_INVAL_G;
+
+	cmd->dword1 = payload;
+}
+
 #endif /* _RISCV_IOMMU_BITS_H_ */

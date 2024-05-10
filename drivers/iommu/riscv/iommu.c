@@ -22,6 +22,7 @@
 #include <linux/irqchip/riscv-imsic.h>
 #include <linux/kernel.h>
 #include <linux/pci.h>
+#include <linux/pci-ats.h>
 #include <linux/generic_pt/iommu.h>
 
 #include "../iommu-pages.h"
@@ -829,6 +830,8 @@ PT_IOMMU_CHECK_DOMAIN(struct riscv_iommu_domain, riscvpt.iommu, domain);
 /* Private IOMMU data for managed devices, dev_iommu_priv_* */
 struct riscv_iommu_info {
 	struct riscv_iommu_domain *domain;
+	u8 ats_supported:1;
+	u8 ats_enabled:1;
 };
 
 /*
@@ -1033,6 +1036,11 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 	struct riscv_iommu_device *iommu, *prev;
 	struct riscv_iommu_bond *bond;
 	struct riscv_iommu_tlbi tlbi;
+	struct riscv_iommu_info *info;
+	struct iommu_fwspec *fwspec;
+	struct riscv_iommu_command cmd;
+	bool sync_required;
+	int i;
 
 	riscv_iommu_tlbi_calc(&tlbi, gather);
 
@@ -1073,10 +1081,30 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 		 * last device the invalidation was sent to.
 		 */
 		if (iommu == prev)
-			continue;
+			goto _ats_inval;
 
 		riscv_iommu_iotlb_inval_iommu(iommu, domain->pscid, &tlbi);
+		sync_required = true;
+
+_ats_inval:
 		prev = iommu;
+		info = dev_iommu_priv_get(bond->dev);
+		if (!info->ats_enabled)
+			continue;
+
+		if (sync_required) {
+			riscv_iommu_cmd_sync(iommu, 0);
+			sync_required = false;
+		}
+
+		fwspec = dev_iommu_fwspec_get(bond->dev);
+		for (i = 0; i < fwspec->num_ids; i++) {
+			riscv_iommu_cmd_ats_inval(&cmd);
+			riscv_iommu_cmd_ats_set_devid(&cmd, fwspec->ids[i]);
+			riscv_iommu_cmd_ats_set_range(&cmd, tlbi.range.addr,
+						      tlbi.range.sz_lg2, true);
+			riscv_iommu_cmd_send(iommu, &cmd);
+		}
 	}
 
 	prev = NULL;
@@ -1501,6 +1529,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	struct riscv_iommu_device *iommu;
 	struct riscv_iommu_info *info;
 	struct riscv_iommu_dc *dc;
+	struct pci_dev *pdev;
 	u64 tc;
 	int i;
 
@@ -1521,11 +1550,23 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	info = kzalloc_obj(*info);
 	if (!info)
 		return ERR_PTR(-ENOMEM);
+
+	if (dev_is_pci(dev)) {
+		pdev = to_pci_dev(dev);
+		if (iommu->caps & RISCV_IOMMU_CAPABILITIES_ATS)
+			info->ats_supported = pci_ats_supported(pdev);
+		if (info->ats_supported)
+			info->ats_enabled = !pci_enable_ats(pdev, PAGE_SHIFT);
+	}
+
 	/*
 	 * Allocate and pre-configure device context entries in
 	 * the device directory. Do not mark the context valid yet.
 	 */
 	tc = 0;
+	if (info->ats_supported)
+		tc |= RISCV_IOMMU_DC_TC_EN_ATS;
+
 	for (i = 0; i < fwspec->num_ids; i++) {
 		dc = riscv_iommu_get_dc(iommu, fwspec->ids[i]);
 		if (!dc) {
@@ -1545,6 +1586,9 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 static void riscv_iommu_release_device(struct device *dev)
 {
 	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+
+	if (info->ats_enabled)
+		pci_disable_ats(to_pci_dev(dev));
 
 	kfree_rcu_mightsleep(info);
 }
