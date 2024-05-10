@@ -20,6 +20,7 @@
 #include <linux/irqchip/riscv-imsic.h>
 #include <linux/kernel.h>
 #include <linux/pci.h>
+#include <linux/pci-ats.h>
 
 #include "../iommu-pages.h"
 #include "iommu-bits.h"
@@ -802,6 +803,8 @@ struct riscv_iommu_domain {
 /* Private IOMMU data for managed devices, dev_iommu_priv_* */
 struct riscv_iommu_info {
 	struct riscv_iommu_domain *domain;
+	u8 ats_supported:1;
+	u8 ats_enabled:1;
 };
 
 /*
@@ -894,6 +897,74 @@ static void riscv_iommu_bond_unlink(struct riscv_iommu_domain *domain,
 	}
 }
 
+/* Enable PCIe supported features */
+static void riscv_iommu_enable_pdev(struct pci_dev *pdev)
+{
+	struct riscv_iommu_info *info = dev_iommu_priv_get(&pdev->dev);
+
+	if (info->ats_supported)
+		info->ats_enabled = !pci_enable_ats(pdev, PAGE_SHIFT);
+}
+
+/* Disable PCIe supported features */
+static void riscv_iommu_disable_pdev(struct pci_dev *pdev)
+{
+	struct riscv_iommu_info *info = dev_iommu_priv_get(&pdev->dev);
+
+	if (info->ats_enabled) {
+		pci_disable_ats(pdev);
+		info->ats_enabled = false;
+	}
+}
+
+/*
+ * Convert [start, end] address range into ATS translation range,
+ * as defined by PCI Express Specification, Section 10.2.3.2
+ */
+static u64 riscv_iommu_ats_range(unsigned long start, unsigned long end)
+{
+	size_t len = __roundup_pow_of_two(end - start + 1);
+	u64 payload = 0;
+
+	if (len == 0)
+		return GENMASK_ULL(62, 11); /* Invalidate all */
+	else if (len < PAGE_SIZE)
+		len = PAGE_SIZE;
+
+	/*
+	 * This algorithm finds the smallest power-of-2 span size that
+	 * covers from start to end.
+	 */
+	unsigned long rounded_start = start & ~(len - 1);
+
+	while ((rounded_start + len) <= end) {
+		len *= 2;
+		rounded_start = start & ~(len - 1);
+
+		/*
+		 * The edge case of len (1<<63) still not covering the
+		 * requested range leads to overflowing the 64b len,
+		 * and is dealt with below as "invalidate all".
+		 */
+		if (len == 0)
+			break;
+	}
+
+	/*
+	 * PCI Express specification
+	 * Section 10.2.3.2 Translation Range Size (S) Field:
+	 * 'S' is bit 11; if 0, pagesize is 4K.  If 1, pagesize is
+	 * given by position of first 0 in bits [63:12], e.g. 64K has
+	 * [16:12] = 0b01111
+	 */
+	if (len)
+		payload = (start & ~(len - 1)) | (((len - 1) >> 12) << 11);
+	else
+		payload = GENMASK_ULL(62, 11); /* Invalidate all */
+
+	return payload;
+}
+
 /*
  * Send IOTLB.INVAL for whole address space for ranges larger than 2MB.
  * This limit will be replaced with range invalidations, if supported by
@@ -908,8 +979,13 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 	struct riscv_iommu_bond *bond;
 	struct riscv_iommu_device *iommu, *prev;
 	struct riscv_iommu_command cmd;
+	struct riscv_iommu_info *info;
+	struct iommu_fwspec *fwspec;
 	unsigned long len = end - start + 1;
 	unsigned long iova;
+	bool sync_required;
+	u64 ats_range;
+	int i;
 
 	/*
 	 * For each IOMMU linked with this protection domain (via bonds->dev),
@@ -935,6 +1011,8 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 	 */
 	smp_mb();
 
+	ats_range = riscv_iommu_ats_range(start, end);
+
 	rcu_read_lock();
 
 	prev = NULL;
@@ -948,7 +1026,7 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 		 * last device the invalidation was sent to.
 		 */
 		if (iommu == prev)
-			continue;
+			goto _ats_inval;
 
 		riscv_iommu_cmd_inval_vma(&cmd);
 		riscv_iommu_cmd_inval_set_pscid(&cmd, domain->pscid);
@@ -960,6 +1038,26 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 		} else {
 			riscv_iommu_cmd_send(iommu, &cmd);
 		}
+		sync_required = true;
+
+_ats_inval:
+		info = dev_iommu_priv_get(bond->dev);
+		if (!info->ats_enabled)
+			continue;
+
+		if (sync_required) {
+			riscv_iommu_cmd_sync(iommu, 0);
+			sync_required = false;
+		}
+
+		fwspec = dev_iommu_fwspec_get(bond->dev);
+		for (i = 0; i < fwspec->num_ids; i++) {
+			riscv_iommu_cmd_ats_inval(&cmd);
+			riscv_iommu_cmd_ats_set_devid(&cmd, fwspec->ids[i]);
+			riscv_iommu_cmd_ats_set_range(&cmd, ats_range, true);
+			riscv_iommu_cmd_send(dev_to_iommu(bond->dev), &cmd);
+		}
+
 		prev = iommu;
 	}
 
@@ -972,6 +1070,7 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 		riscv_iommu_cmd_sync(iommu, RISCV_IOMMU_IOTINVAL_TIMEOUT);
 		prev = iommu;
 	}
+
 	rcu_read_unlock();
 }
 
@@ -998,6 +1097,9 @@ static void riscv_iommu_iodir_update(struct riscv_iommu_device *iommu,
 	bool sync_required = false;
 	u64 tc;
 	int i;
+
+	if (dev_is_pci(dev))
+		riscv_iommu_disable_pdev(to_pci_dev(dev));
 
 	for (i = 0; i < fwspec->num_ids; i++) {
 		dc = riscv_iommu_get_dc(iommu, fwspec->ids[i]);
@@ -1039,6 +1141,9 @@ static void riscv_iommu_iodir_update(struct riscv_iommu_device *iommu,
 	}
 
 	riscv_iommu_cmd_sync(iommu, RISCV_IOMMU_IOTINVAL_TIMEOUT);
+
+	if (dev_is_pci(dev) && (ta & RISCV_IOMMU_DC_TC_V))
+		riscv_iommu_enable_pdev(to_pci_dev(dev));
 }
 
 /*
@@ -1574,6 +1679,7 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	struct riscv_iommu_device *iommu;
 	struct riscv_iommu_info *info;
 	struct riscv_iommu_dc *dc;
+	struct pci_dev *pdev;
 	u64 tc;
 	int i;
 
@@ -1594,6 +1700,14 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return ERR_PTR(-ENOMEM);
+
+	if (dev_is_pci(dev)) {
+		pdev = to_pci_dev(dev);
+
+		if (iommu->caps & RISCV_IOMMU_CAPABILITIES_ATS)
+			info->ats_supported = pci_ats_supported(pdev);
+	}
+
 	/*
 	 * Allocate and pre-configure device context entries in
 	 * the device directory. Do not mark the context valid yet.
@@ -1601,6 +1715,8 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	tc = 0;
 	if (iommu->caps & RISCV_IOMMU_CAPABILITIES_AMO_HWAD)
 		tc |= RISCV_IOMMU_DC_TC_SADE;
+	if (info->ats_supported)
+		tc |= RISCV_IOMMU_DC_TC_EN_ATS;
 
 	for (i = 0; i < fwspec->num_ids; i++) {
 		dc = riscv_iommu_get_dc(iommu, fwspec->ids[i]);
