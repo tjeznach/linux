@@ -36,6 +36,7 @@
 /* Number of entries per CMD/FLT queue, should be <= INT_MAX */
 #define RISCV_IOMMU_DEF_CQ_COUNT	8192
 #define RISCV_IOMMU_DEF_FQ_COUNT	4096
+#define RISCV_IOMMU_DEF_PQ_COUNT	4096
 
 /* RISC-V IOMMU PPN <> PHYS address conversions, PHYS <=> PPN[53:10] */
 #define phys_to_ppn(pa)  (((pa) >> 2) & (((1ULL << 44) - 1) << 10))
@@ -932,11 +933,17 @@ struct riscv_iommu_domain {
 /* Private IOMMU data for managed devices, dev_iommu_priv_* */
 struct riscv_iommu_info {
 	struct riscv_iommu_domain *domain;
+	struct rb_node node;
+	struct device *dev;
 	u64 pdtp;		/* Process Directory Table Pointer */
+	u32 devid;		/* device identifier, assuming iommu_fwspec->num_ids == 1 */
 	u8 ats_supported:1;
 	u8 ats_enabled:1;
 	u8 pasid_supported:1;
 	u8 pasid_enabled:1;
+	u8 pri_supported:1;
+	u8 pri_enabled:1;
+	u8 pri_pasid_required:1;
 };
 
 /*
@@ -1029,6 +1036,230 @@ static void riscv_iommu_bond_unlink(struct riscv_iommu_domain *domain,
 
 		riscv_iommu_cmd_sync(iommu, RISCV_IOMMU_IOTINVAL_TIMEOUT);
 	}
+}
+
+/* Register device for IOMMU device-id based tracking. */
+static void riscv_iommu_add_device(struct device *dev)
+{
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
+	struct riscv_iommu_info *info, *rb_info;
+	struct rb_node **new_node, *parent_node = NULL;
+
+	info = dev_iommu_priv_get(dev);
+
+	mutex_lock(&iommu->devs_mutex);
+	new_node = &iommu->devs.rb_node;
+	while (*new_node) {
+		rb_info = rb_entry(*new_node, struct riscv_iommu_info, node);
+		parent_node = *new_node;
+		if (rb_info->devid > info->devid) {
+			new_node = &((*new_node)->rb_left);
+		} else if (rb_info->devid < info->devid) {
+			new_node = &((*new_node)->rb_right);
+		} else {
+			mutex_unlock(&iommu->devs_mutex);
+		}
+	}
+
+	rb_link_node(&info->node, parent_node, new_node);
+	rb_insert_color(&info->node, &iommu->devs);
+
+	mutex_unlock(&iommu->devs_mutex);
+}
+
+/* Remove device from IOMMU tracking structures. */
+static void riscv_iommu_del_device(struct device *dev)
+{
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+
+	mutex_lock(&iommu->devs_mutex);
+	rb_erase(&info->node, &iommu->devs);
+	mutex_unlock(&iommu->devs_mutex);
+}
+
+/*
+ * Get device reference based on device identifier (requester id).
+ * Decrement reference count with put_device() call.
+ */
+static struct device *riscv_iommu_get_device(struct riscv_iommu_device *iommu,
+					     unsigned int devid)
+{
+	struct rb_node *node;
+	struct riscv_iommu_info *info;
+	struct device *dev = NULL;
+
+	mutex_lock(&iommu->devs_mutex);
+
+	node = iommu->devs.rb_node;
+	while (node && !dev) {
+		info = rb_entry(node, struct riscv_iommu_info, node);
+		if (info->devid < devid)
+			node = node->rb_right;
+		else if (info->devid > devid)
+			node = node->rb_left;
+		else
+			dev = get_device(info->dev);
+	}
+
+	mutex_unlock(&iommu->devs_mutex);
+
+	return dev;
+}
+
+static void riscv_iommu_page_response(struct device *dev,
+				      struct iopf_fault *evt,
+				      struct iommu_page_response *msg)
+{
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
+	struct riscv_iommu_command cmd;
+	int code = 0; /* IOMMU_PAGE_RESP_SUCCESS */
+
+	if (msg->code == IOMMU_PAGE_RESP_INVALID)
+		code = 0b0001;
+	else if (msg->code == IOMMU_PAGE_RESP_FAILURE)
+		code = 0b1111;
+
+	riscv_iommu_cmd_prgr(&cmd);
+	riscv_iommu_cmd_prgr_set_response(&cmd, msg->grpid, code);
+	riscv_iommu_cmd_prgr_set_devid(&cmd, info->devid);
+	riscv_iommu_cmd_prgr_set_pid(&cmd, msg->pasid);
+	riscv_iommu_cmd_send(iommu, &cmd);
+}
+
+static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
+				     struct riscv_iommu_pq_record *req)
+{
+	struct iopf_fault event = { };
+	struct iommu_fault_page_request *prm = &event.fault.prm;
+	struct riscv_iommu_info *info;
+	struct device *dev;
+
+	/* Ignore PGR Stop marker. */
+	if ((req->payload & RISCV_IOMMU_PQ_PAYLOAD_RWL_MASK) == RISCV_IOMMU_PQ_PAYLOAD_L)
+		return;
+
+	/* If device is no longer tracked by the IOMMU there is no point to process PRGR */
+	dev = riscv_iommu_get_device(iommu, FIELD_GET(RISCV_IOMMU_PQ_HDR_DID, req->hdr));
+	if (!dev)
+		return;
+	info = dev_iommu_priv_get(dev);
+	event.fault.type = IOMMU_FAULT_PAGE_REQ;
+	if (req->payload & RISCV_IOMMU_PQ_PAYLOAD_L)
+		prm->flags |= IOMMU_FAULT_PAGE_REQUEST_LAST_PAGE;
+	if (req->payload & RISCV_IOMMU_PQ_PAYLOAD_W)
+		prm->perm |= IOMMU_FAULT_PERM_WRITE;
+	if (req->payload & RISCV_IOMMU_PQ_PAYLOAD_R)
+		prm->perm |= IOMMU_FAULT_PERM_READ;
+	if (req->hdr & RISCV_IOMMU_PQ_HDR_PRIV)
+		prm->perm |= IOMMU_FAULT_PERM_PRIV;
+	if (req->hdr & RISCV_IOMMU_PQ_HDR_EXEC)
+		prm->perm |= IOMMU_FAULT_PERM_EXEC;
+	prm->grpid = FIELD_GET(RISCV_IOMMU_PQ_PAYLOAD_PRGI, req->payload);
+	prm->addr = FIELD_GET(RISCV_IOMMU_PQ_PAYLOAD_ADDR, req->payload) << PAGE_SHIFT;
+
+	if (req->hdr & RISCV_IOMMU_PQ_HDR_PV) {
+		prm->pasid = FIELD_GET(RISCV_IOMMU_PQ_HDR_PID, req->hdr);
+		prm->flags |= IOMMU_FAULT_PAGE_REQUEST_PASID_VALID;
+		if (info->pri_pasid_required)
+			prm->flags |= IOMMU_FAULT_PAGE_RESPONSE_NEEDS_PASID;
+	}
+
+	iommu_report_device_fault(dev, &event);
+
+	put_device(dev);
+}
+
+/* Page Request queue interrupt hanlder thread function */
+static irqreturn_t riscv_iommu_priq_process(int irq, void *data)
+{
+	struct riscv_iommu_queue *queue = (struct riscv_iommu_queue *)data;
+	struct riscv_iommu_device *iommu = queue->iommu;
+	struct riscv_iommu_pq_record *events;
+	unsigned int ctrl, idx;
+	int cnt, len;
+
+	events = (struct riscv_iommu_pq_record *)queue->base;
+
+	/* Clear fault interrupt pending and process all received events. */
+	riscv_iommu_writel(iommu, RISCV_IOMMU_REG_IPSR, Q_IPSR(queue));
+
+	do {
+		cnt = riscv_iommu_queue_consume(queue, &idx);
+		for (len = 0; len < cnt; idx++, len++)
+			riscv_iommu_page_request(iommu, &events[Q_ITEM(queue, idx)]);
+		riscv_iommu_queue_release(queue, cnt);
+	} while (cnt > 0);
+
+	/* Clear MF/OF errors, complete error recovery to be implemented. */
+	ctrl = riscv_iommu_readl(iommu, queue->qcr);
+	if (ctrl & (RISCV_IOMMU_PQCSR_PQMF | RISCV_IOMMU_PQCSR_PQOF)) {
+		riscv_iommu_writel(iommu, queue->qcr, ctrl);
+		dev_warn(iommu->dev,
+			 "Queue #%u error; memory fault:%d overflow:%d\n",
+			 queue->qid,
+			 !!(ctrl & RISCV_IOMMU_PQCSR_PQMF),
+			 !!(ctrl & RISCV_IOMMU_PQCSR_PQOF));
+	}
+
+	return IRQ_HANDLED;
+}
+
+static int riscv_iommu_dev_enable_iopf(struct device *dev)
+{
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+	int rc;
+
+	if (!info->pri_supported || !iommu->pq_work)
+		return -ENODEV;
+	if (info->pri_enabled)
+		return -EBUSY;
+
+	riscv_iommu_add_device(dev);
+
+#ifdef CONFIG_PCI_PRI
+	rc = pci_reset_pri(to_pci_dev(dev));
+	if (rc)
+		return rc;
+
+	rc = iopf_queue_add_device(iommu->pq_work, dev);
+	if (rc)
+		return rc;
+
+	rc = pci_enable_pri(to_pci_dev(dev), 32);
+	if (rc) {
+		iopf_queue_remove_device(iommu->pq_work, dev);
+		return rc;
+	}
+
+	info->pri_pasid_required = pci_prg_resp_pasid_required(to_pci_dev(dev));
+	info->pri_enabled = true;
+#else
+	rc = -ENODEV;
+#endif
+
+	return rc;
+}
+
+static int riscv_iommu_dev_disable_iopf(struct device *dev)
+{
+#ifdef CONFIG_PCI_PRI
+	struct riscv_iommu_device *iommu = dev_to_iommu(dev);
+	struct riscv_iommu_info *info = dev_iommu_priv_get(dev);
+
+	if (!info->pri_enabled)
+		return -EINVAL;
+
+	info->pri_enabled = false;
+	pci_disable_pri(to_pci_dev(dev));
+	iopf_queue_remove_device(iommu->pq_work, dev);
+
+	riscv_iommu_del_device(dev);
+#endif
+
+	return 0;
 }
 
 /* Enable PCIe supported features */
@@ -1944,7 +2175,7 @@ static int riscv_iommu_dev_enable_sva(struct device *dev)
 static int riscv_iommu_dev_enable_feat(struct device *dev, enum iommu_dev_features feat)
 {
 	if (feat == IOMMU_DEV_FEAT_IOPF)
-		return 0;
+		return riscv_iommu_dev_enable_iopf(dev);
 	if (feat == IOMMU_DEV_FEAT_SVA)
 		return riscv_iommu_dev_enable_sva(dev);
 
@@ -1954,13 +2185,12 @@ static int riscv_iommu_dev_enable_feat(struct device *dev, enum iommu_dev_featur
 static int riscv_iommu_dev_disable_feat(struct device *dev, enum iommu_dev_features feat)
 {
 	if (feat == IOMMU_DEV_FEAT_IOPF)
-		return 0;
+		return riscv_iommu_dev_disable_iopf(dev);
 	if (feat == IOMMU_DEV_FEAT_SVA)
 		return 0;
 
 	return -ENODEV;
 }
-
 
 static int riscv_iommu_of_xlate(struct device *dev, const struct of_phandle_args *args)
 {
@@ -1995,12 +2225,9 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 	if (!info)
 		return ERR_PTR(-ENOMEM);
 
-	if (dev_is_pci(dev)) {
-		pdev = to_pci_dev(dev);
-
-		if (iommu->caps & RISCV_IOMMU_CAPABILITIES_ATS)
-			info->ats_supported = pci_ats_supported(pdev);
-	}
+	info->dev = dev;
+	info->devid = fwspec->ids[0];
+	RB_CLEAR_NODE(&info->node);
 
 	/*
 	 * Allocate and pre-configure device context entries in
@@ -2018,8 +2245,12 @@ static struct iommu_device *riscv_iommu_probe_device(struct device *dev)
 			info->ats_supported = pci_ats_supported(pdev);
 		if (info->ats_supported && iommu->iommu.max_pasids)
 			info->pasid_supported = pci_pasid_features(pdev) >= 0;
+		if (info->ats_supported && info->pasid_supported)
+			info->pri_supported = pci_pri_supported(pdev);
 		if (info->ats_supported)
 			tc |= RISCV_IOMMU_DC_TC_EN_ATS;
+		if (info->pri_supported)
+			tc |= RISCV_IOMMU_DC_TC_EN_PRI;
 		if (info->pasid_supported)
 			info->pdtp = riscv_iommu_pdtp_alloc(iommu);
 		if (info->pdtp)
@@ -2082,6 +2313,7 @@ static const struct iommu_ops riscv_iommu_ops = {
 	.device_group = riscv_iommu_device_group,
 	.dev_enable_feat = riscv_iommu_dev_enable_feat,
 	.dev_disable_feat = riscv_iommu_dev_disable_feat,
+	.page_response = riscv_iommu_page_response,
 	.probe_device = riscv_iommu_probe_device,
 	.release_device	= riscv_iommu_release_device,
 };
@@ -2155,6 +2387,8 @@ void riscv_iommu_remove(struct riscv_iommu_device *iommu)
 	riscv_iommu_iodir_set_mode(iommu, RISCV_IOMMU_DDTP_IOMMU_MODE_OFF);
 	riscv_iommu_queue_disable(&iommu->cmdq);
 	riscv_iommu_queue_disable(&iommu->fltq);
+	riscv_iommu_queue_disable(&iommu->priq);
+	iopf_queue_free(iommu->pq_work);
 }
 
 int riscv_iommu_init(struct riscv_iommu_device *iommu)
@@ -2163,6 +2397,8 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 
 	RISCV_IOMMU_QUEUE_INIT(&iommu->cmdq, CQ);
 	RISCV_IOMMU_QUEUE_INIT(&iommu->fltq, FQ);
+	RISCV_IOMMU_QUEUE_INIT(&iommu->priq, PQ);
+	mutex_init(&iommu->devs_mutex);
 
 	rc = riscv_iommu_init_check(iommu);
 	if (rc)
@@ -2182,11 +2418,22 @@ int riscv_iommu_init(struct riscv_iommu_device *iommu)
 	if (rc)
 		return rc;
 
+	rc = riscv_iommu_queue_alloc(iommu, &iommu->priq,
+				     sizeof(struct riscv_iommu_pq_record));
+	if (rc)
+		return rc;
+
+	iommu->pq_work = iopf_queue_alloc(dev_name(iommu->dev));
+
 	rc = riscv_iommu_queue_enable(iommu, &iommu->cmdq, riscv_iommu_cmdq_process);
 	if (rc)
 		return rc;
 
 	rc = riscv_iommu_queue_enable(iommu, &iommu->fltq, riscv_iommu_fltq_process);
+	if (rc)
+		goto err_queue_disable;
+
+	rc = riscv_iommu_queue_enable(iommu, &iommu->priq, riscv_iommu_priq_process);
 	if (rc)
 		goto err_queue_disable;
 
@@ -2214,6 +2461,7 @@ err_remove_sysfs:
 err_iodir_off:
 	riscv_iommu_iodir_set_mode(iommu, RISCV_IOMMU_DDTP_IOMMU_MODE_OFF);
 err_queue_disable:
+	riscv_iommu_queue_disable(&iommu->priq);
 	riscv_iommu_queue_disable(&iommu->fltq);
 	riscv_iommu_queue_disable(&iommu->cmdq);
 	return rc;

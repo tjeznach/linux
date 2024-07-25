@@ -818,4 +818,35 @@ static inline void riscv_iommu_cmd_ats_set_range(struct riscv_iommu_command *cmd
 	cmd->dword1 = payload;
 }
 
+static inline void riscv_iommu_cmd_prgr(struct riscv_iommu_command *cmd)
+{
+	cmd->dword0 = FIELD_PREP(RISCV_IOMMU_CMD_OPCODE, RISCV_IOMMU_CMD_ATS_OPCODE) |
+		      FIELD_PREP(RISCV_IOMMU_CMD_FUNC, RISCV_IOMMU_CMD_ATS_FUNC_PRGR);
+	cmd->dword1 = 0;
+}
+
+static inline void riscv_iommu_cmd_prgr_set_devid(struct riscv_iommu_command *cmd,
+						  unsigned int devid)
+{
+	const unsigned int seg = (devid & 0x0ff0000) >> 16;
+	const unsigned int rid = (devid & 0x000ffff);
+
+	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_ATS_DSEG, seg) | RISCV_IOMMU_CMD_ATS_DSV |
+		       FIELD_PREP(RISCV_IOMMU_CMD_ATS_RID, rid);
+	cmd->dword1 |= FIELD_PREP(RISCV_IOMMU_CMD_ATS_PRGR_DST_ID, rid);
+}
+
+static inline void riscv_iommu_cmd_prgr_set_response(struct riscv_iommu_command *cmd,
+						     int group, int code)
+{
+	cmd->dword1 |= FIELD_PREP(RISCV_IOMMU_CMD_ATS_PRGR_RESP_CODE, code) |
+		       FIELD_PREP(RISCV_IOMMU_CMD_ATS_PRGR_PRG_INDEX, group);
+}
+
+static inline void riscv_iommu_cmd_prgr_set_pid(struct riscv_iommu_command *cmd,
+						unsigned int pid)
+{
+	cmd->dword0 |= FIELD_PREP(RISCV_IOMMU_CMD_ATS_PID, pid) | RISCV_IOMMU_CMD_ATS_PV;
+}
+
 #endif /* _RISCV_IOMMU_BITS_H_ */
