@@ -11,6 +11,7 @@ config RISCV_IOMMU
 	select MMU_NOTIFIER
 	select PCI_ATS
 	select PCI_PASID
+	select PCI_PRI
 	help
 	  Support for implementations of the RISC-V IOMMU architecture that
 	  complements the RISC-V MMU capabilities, providing similar address
