@@ -55,11 +55,18 @@ struct riscv_iommu_device {
 	/* hardware queues */
 	struct riscv_iommu_queue cmdq;
 	struct riscv_iommu_queue fltq;
+	struct riscv_iommu_queue priq;
 
 	/* device directory */
 	unsigned int ddt_mode;
 	dma_addr_t ddt_phys;
 	u64 *ddt_root;
+
+	/* I/O page fault queue */
+	struct iopf_queue *pq_work;
+	/* Connected end-points */
+	struct rb_root devs;
+	struct mutex devs_mutex;
 };
 
 int riscv_iommu_init(struct riscv_iommu_device *iommu);
