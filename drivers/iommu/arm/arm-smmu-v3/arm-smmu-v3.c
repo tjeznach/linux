@@ -1777,7 +1777,7 @@ static int arm_smmu_handle_evt(struct arm_smmu_device *smmu, u64 *evt)
 		goto out_unlock;
 	}
 
-	iommu_report_device_fault(master->dev, &fault_evt);
+	ret = iommu_report_device_fault(master->dev, &fault_evt);
 out_unlock:
 	mutex_unlock(&smmu->streams_mutex);
 	return ret;
@@ -3294,6 +3294,12 @@ static struct iommu_device *arm_smmu_probe_device(struct device *dev)
 	     device_property_read_bool(dev, "dma-can-stall")) ||
 	    smmu->features & ARM_SMMU_FEAT_STALL_FORCE)
 		master->stall_enabled = true;
+
+	if (dev_is_pci(dev)) {
+		unsigned int stu = __ffs(smmu->pgsize_bitmap);
+
+		pci_prepare_ats(to_pci_dev(dev), stu);
+	}
 
 	return &smmu->iommu;
 
