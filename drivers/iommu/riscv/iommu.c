@@ -1165,7 +1165,6 @@ static void riscv_iommu_page_request(struct riscv_iommu_device *iommu,
 		if (info->pri_pasid_required)
 			prm->flags |= IOMMU_FAULT_PAGE_RESPONSE_NEEDS_PASID;
 	}
-
 	iommu_report_device_fault(dev, &event);
 
 	put_device(dev);
@@ -1335,10 +1334,14 @@ static u64 riscv_iommu_ats_range(unsigned long start, unsigned long end)
  * the hardware, when RISC-V IOMMU architecture specification update for
  * range invalidations update will be available.
  */
-#define RISCV_IOMMU_IOTLB_INVAL_LIMIT	(2 << 20)
+#define INVAL_LIMIT	(2 << 20)
+
+#define INVAL_PTE	1	/* Invalidate page table entries (leaf nodes) */
+#define INVAL_PDE	2	/* Invalidate page directory entries (non-leaf) */
 
 static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
-				    unsigned long start, unsigned long end)
+				    unsigned long start, unsigned long end,
+				    int flags)
 {
 	struct riscv_iommu_bond *bond;
 	struct riscv_iommu_device *iommu, *prev;
@@ -1394,17 +1397,37 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 
 		riscv_iommu_cmd_inval_vma(&cmd);
 		riscv_iommu_cmd_inval_set_pscid(&cmd, domain->pscid);
-		if (len && len < RISCV_IOMMU_IOTLB_INVAL_LIMIT) {
+		if ((flags & INVAL_PDE) && (iommu->caps & RISCV_IOMMU_CAPABILITIES_NL))
+			riscv_iommu_cmd_inval_set_nl(&cmd);
+
+		if (!len) {
+			riscv_iommu_cmd_send(iommu, &cmd);
+		} else if ((flags & INVAL_PDE) && !(iommu->caps & RISCV_IOMMU_CAPABILITIES_NL)) {
+			/*
+			 * In 1.0 spec version, the smallest scope we can use to
+			 * invalidate all levels of page table (i.e. leaf and non-leaf)
+			 * is an invalidate-all-PSCID IOTINVAL.VMA with AV=0.
+			 */
+			riscv_iommu_cmd_send(iommu, &cmd);
+		} else if (len < INVAL_LIMIT) {
+			/*
+			 * If range-size invalidation is not supported, fallback to series
+			 * of 4KB invalidations, if less than invalidation threshold.
+			 */
 			for (iova = start; iova < end; iova += PAGE_SIZE) {
 				riscv_iommu_cmd_inval_set_addr(&cmd, iova);
 				riscv_iommu_cmd_send(iommu, &cmd);
 			}
 		} else {
+			/* Range-size IOTLBINVAL not supported, invalidate all PSCID. */
 			riscv_iommu_cmd_send(iommu, &cmd);
 		}
 		sync_required = true;
 
 skip_ioltb_inval:
+		if (!(flags & INVAL_PTE))
+			goto skip_ats_inval;
+
 		info = dev_iommu_priv_get(bond->dev);
 		if (!info->ats_enabled)
 			goto skip_ats_inval;
@@ -1545,7 +1568,7 @@ static void riscv_iommu_iotlb_flush_all(struct iommu_domain *iommu_domain)
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 
-	riscv_iommu_iotlb_inval(domain, 0, ULONG_MAX);
+	riscv_iommu_iotlb_inval(domain, 0, ULONG_MAX, INVAL_PTE);
 }
 
 static void riscv_iommu_iotlb_sync(struct iommu_domain *iommu_domain,
@@ -1553,7 +1576,7 @@ static void riscv_iommu_iotlb_sync(struct iommu_domain *iommu_domain,
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 
-	riscv_iommu_iotlb_inval(domain, gather->start, gather->end);
+	riscv_iommu_iotlb_inval(domain, gather->start, gather->end, INVAL_PTE);
 }
 
 #define PT_SHIFT (PAGE_SHIFT - ilog2(sizeof(pte_t)))
@@ -1703,14 +1726,7 @@ static int riscv_iommu_map_pages(struct iommu_domain *iommu_domain,
 	*mapped = size;
 
 	if (!list_empty(&freelist)) {
-		/*
-		 * In 1.0 spec version, the smallest scope we can use to
-		 * invalidate all levels of page table (i.e. leaf and non-leaf)
-		 * is an invalidate-all-PSCID IOTINVAL.VMA with AV=0.
-		 * This will be updated with hardware support for
-		 * capability.NL (non-leaf) IOTINVAL command.
-		 */
-		riscv_iommu_iotlb_inval(domain, 0, ULONG_MAX);
+		riscv_iommu_iotlb_inval(domain, iova - size, iova - 1, INVAL_PDE);
 		iommu_put_pages_list(&freelist);
 	}
 
@@ -1965,7 +1981,7 @@ static void riscv_iommu_sva_inval(struct mmu_notifier *mn, struct mm_struct *mm,
 	struct riscv_iommu_domain *domain;
 
 	domain = container_of(mn, struct riscv_iommu_domain, notifier);
-	riscv_iommu_iotlb_inval(domain, start, end - 1);
+	riscv_iommu_iotlb_inval(domain, start, end - 1, INVAL_PTE | INVAL_PDE);
 }
 
 static const struct mmu_notifier_ops riscv_iommu_sva_notifier_ops = {
