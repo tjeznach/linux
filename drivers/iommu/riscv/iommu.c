@@ -1541,13 +1541,6 @@ static void riscv_iommu_iodir_update(struct riscv_iommu_device *iommu,
  * IOVA page translation tree management.
  */
 
-#define IOMMU_PAGE_SIZE_4K     BIT_ULL(12)
-#define IOMMU_PAGE_SIZE_2M     BIT_ULL(21)
-#define IOMMU_PAGE_SIZE_1G     BIT_ULL(30)
-#define IOMMU_PAGE_SIZE_512G   BIT_ULL(39)
-
-#define PT_SHIFT (PAGE_SHIFT - ilog2(sizeof(pte_t)))
-
 static void riscv_iommu_iotlb_flush_all(struct iommu_domain *iommu_domain)
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
@@ -1563,16 +1556,7 @@ static void riscv_iommu_iotlb_sync(struct iommu_domain *iommu_domain,
 	riscv_iommu_iotlb_inval(domain, gather->start, gather->end);
 }
 
-static inline size_t get_page_size(size_t size)
-{
-	if (size >= IOMMU_PAGE_SIZE_512G)
-		return IOMMU_PAGE_SIZE_512G;
-	if (size >= IOMMU_PAGE_SIZE_1G)
-		return IOMMU_PAGE_SIZE_1G;
-	if (size >= IOMMU_PAGE_SIZE_2M)
-		return IOMMU_PAGE_SIZE_2M;
-	return IOMMU_PAGE_SIZE_4K;
-}
+#define PT_SHIFT (PAGE_SHIFT - ilog2(sizeof(pte_t)))
 
 #define _io_pte_present(pte)	((pte) & (_PAGE_PRESENT | _PAGE_PROT_NONE))
 #define _io_pte_leaf(pte)	((pte) & _PAGE_LEAF)
@@ -1684,7 +1668,6 @@ static int riscv_iommu_map_pages(struct iommu_domain *iommu_domain,
 {
 	struct riscv_iommu_domain *domain = iommu_domain_to_riscv(iommu_domain);
 	size_t size = 0;
-	size_t page_size = get_page_size(pgsize);
 	unsigned long *ptr;
 	unsigned long pte, old, pte_prot;
 	int rc = 0;
@@ -1698,7 +1681,7 @@ static int riscv_iommu_map_pages(struct iommu_domain *iommu_domain,
 		pte_prot = _PAGE_BASE | _PAGE_READ | _PAGE_WRITE | _PAGE_DIRTY;
 
 	while (pgcount) {
-		ptr = riscv_iommu_pte_alloc(domain, iova, page_size, gfp);
+		ptr = riscv_iommu_pte_alloc(domain, iova, pgsize, gfp);
 		if (!ptr) {
 			rc = -ENOMEM;
 			break;
@@ -1711,9 +1694,9 @@ static int riscv_iommu_map_pages(struct iommu_domain *iommu_domain,
 
 		riscv_iommu_pte_free(domain, old, &freelist);
 
-		size += page_size;
-		iova += page_size;
-		phys += page_size;
+		size += pgsize;
+		iova += pgsize;
+		phys += pgsize;
 		--pgcount;
 	}
 
