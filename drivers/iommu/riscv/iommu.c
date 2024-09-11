@@ -2299,7 +2299,7 @@ static void riscv_iommu_release_device(struct device *dev)
 }
 
 static const struct iommu_ops riscv_iommu_ops = {
-	.pgsize_bitmap = SZ_4K,
+	.pgsize_bitmap = SZ_4K | SZ_2M | SZ_1G | SZ_512G,
 	.of_xlate = riscv_iommu_of_xlate,
 	.capable = riscv_iommu_capable,
 	.identity_domain = &riscv_iommu_identity_domain,
