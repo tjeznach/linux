@@ -1409,6 +1409,9 @@ static void riscv_iommu_iotlb_inval(struct riscv_iommu_domain *domain,
 			 * is an invalidate-all-PSCID IOTINVAL.VMA with AV=0.
 			 */
 			riscv_iommu_cmd_send(iommu, &cmd);
+		} else if (iommu->caps & RISCV_IOMMU_CAPABILITIES_S) {
+			riscv_iommu_cmd_inval_set_range(&cmd, ats_range);
+			riscv_iommu_cmd_send(iommu, &cmd);
 		} else if (len < INVAL_LIMIT) {
 			/*
 			 * If range-size invalidation is not supported, fallback to series
