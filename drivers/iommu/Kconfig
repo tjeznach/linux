@@ -518,7 +518,7 @@ config HYPERV_IOMMU
 config VIRTIO_IOMMU
 	tristate "Virtio IOMMU driver"
 	depends on VIRTIO
-	depends on (ARM64 || X86)
+	depends on (ARM64 || X86 || RISCV)
 	select IOMMU_API
 	select INTERVAL_TREE
 	select ACPI_VIOT if ACPI
