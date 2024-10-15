@@ -1450,11 +1450,6 @@ static struct iommu_domain riscv_iommu_identity_domain = {
 	}
 };
 
-static int riscv_iommu_device_domain_type(struct device *dev)
-{
-	return 0;
-}
-
 static struct iommu_group *riscv_iommu_device_group(struct device *dev)
 {
 	if (dev_is_pci(dev))
@@ -1531,7 +1526,6 @@ static const struct iommu_ops riscv_iommu_ops = {
 	.blocked_domain = &riscv_iommu_blocking_domain,
 	.release_domain = &riscv_iommu_blocking_domain,
 	.domain_alloc_paging = riscv_iommu_alloc_paging_domain,
-	.def_domain_type = riscv_iommu_device_domain_type,
 	.device_group = riscv_iommu_device_group,
 	.probe_device = riscv_iommu_probe_device,
 	.release_device	= riscv_iommu_release_device,
