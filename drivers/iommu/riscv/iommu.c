@@ -404,7 +404,7 @@ static unsigned int riscv_iommu_queue_send(struct riscv_iommu_queue *queue,
 		atomic_add((head - last) & queue->mask, &queue->head);
 	}
 
-	/* 3. Store entry in the ring buffer. */
+	/* 3. Store entry in the ring buffer */
 	memcpy(queue->base + Q_ITEM(queue, prod) * entry_size, entry, entry_size);
 
 	/* 4. Wait for all previous entries to be ready */
@@ -412,10 +412,17 @@ static unsigned int riscv_iommu_queue_send(struct riscv_iommu_queue *queue,
 			       0, RISCV_IOMMU_QUEUE_TIMEOUT))
 		goto err_busy;
 
-	/* 5. Complete submission and restore local interrupts */
+	/* 5. Ensure queue ring buffer memory write (normal or I/O memory) is visible
+	      before queue tail doorbell (I/O memory) update -> fence ow, ow */
 	dma_wmb();
 	riscv_iommu_writel(queue->iommu, Q_TAIL(queue), Q_ITEM(queue, prod + 1));
+
+	/* 6. Ensure queue doorbell write to the device have completed before updating
+	      shadow tail index located in normal memory -> fence o, w */
+	mmiowb();
 	atomic_inc(&queue->tail);
+
+	/* 7. Complete submission and restore local interrupts */
 	local_irq_restore(flags);
 
 	return prod;
